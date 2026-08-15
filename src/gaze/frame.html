@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Drishti gaze frame</title>
+  <style>
+    /* This whole document is an invisible, click-through overlay. WebGazer runs
+       here at the extension origin; nothing is meant to be seen. The parent page
+       sizes the iframe to the full viewport so WebGazer's coordinate clamping
+       (max of clientWidth/innerWidth) matches the visible viewport exactly. */
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: transparent; overflow: hidden; }
+    /* WebGazer injects a #webgazerVideoContainer; keep it hidden by default.
+       gaze.js can ask for a preview, which flips .show on <html>. */
+    #webgazerVideoContainer { display: none !important; }
+    html.show #webgazerVideoContainer { display: block !important; }
+  </style>
+</head>
+<body>
+  <!-- Load order matches the old content-script order, minus the page/CSP problems:
+       here we are at chrome-extension:// origin, so WebGazer's relative FaceMesh
+       path resolves to our bundled assets and OUR CSP (extension_pages) applies. -->
+  <script src="preload.js"></script>
+  <script src="../vendor/webgazer.js"></script>
+  <script src="frame.js"></script>
+</body>
+</html>

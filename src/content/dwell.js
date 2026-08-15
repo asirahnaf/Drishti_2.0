@@ -1,0 +1,138 @@
+// Drishti 2.0 — Dwell state machine (plan §4)
+//
+//   IDLE ──point enters zone──▶ HOVER ──dwell 750ms──▶ CONFIRM(fill ring) ──▶ FIRE
+//     ▲                           │                                            │
+//     └────────point leaves───────┘◀──────────── cooldown 400ms ──────────────┘
+//
+// Design goal: input-agnostic. It consumes a stream of (x, y) VIEWPORT points and
+// hit-tests them against registered zone rectangles. In Step 2 those points come
+// from the mouse; in Step 3 they come from WebGazer — nothing else changes.
+//
+// It runs its own requestAnimationFrame tick using the LAST known point, so dwell
+// keeps progressing even when the pointer is perfectly still (mouse stopped, or a
+// steady gaze). Movement events only update the point; the tick drives the timing.
+
+(() => {
+  "use strict";
+  const NS = (window.Drishti = window.Drishti || {});
+
+  const STATE = { IDLE: "IDLE", HOVER: "HOVER", COOLDOWN: "COOLDOWN" };
+
+  class DwellEngine {
+    /**
+     * @param {object} opts
+     * @param {number} opts.dwellMs     ms of steady dwell before firing
+     * @param {number} opts.cooldownMs  ms lockout after a fire
+     * @param {(info:object)=>void} opts.onState  called every tick with {state, zoneId, progress}
+     * @param {(zone:object)=>void} opts.onFire   called once when a zone fires
+     */
+    constructor({ dwellMs = 750, cooldownMs = 400, onState, onFire }) {
+      this.dwellMs = dwellMs;
+      this.cooldownMs = cooldownMs;
+      this.onState = onState || (() => {});
+      this.onFire = onFire || (() => {});
+
+      this.zones = []; // [{ id, action, getRect: () => DOMRect }]
+      this.point = null; // { x, y } last known viewport point
+      this.state = STATE.IDLE;
+      this.zoneId = null; // zone currently being dwelled
+      this.enterAt = 0; // performance.now() when HOVER began
+      this.cooldownUntil = 0;
+
+      this._running = false;
+      this._tick = this._tick.bind(this);
+    }
+
+    setZones(zones) {
+      this.zones = zones;
+    }
+
+    /** Feed a viewport point (mouse now, gaze later). */
+    update(x, y) {
+      this.point = { x, y };
+    }
+
+    /** Point left the tracked surface entirely (e.g. mouse off-window). */
+    clearPoint() {
+      this.point = null;
+    }
+
+    start() {
+      if (this._running) return;
+      this._running = true;
+      requestAnimationFrame(this._tick);
+    }
+
+    stop() {
+      this._running = false;
+      this._reset(STATE.IDLE);
+    }
+
+    _reset(state) {
+      this.state = state;
+      this.zoneId = null;
+      this.enterAt = 0;
+    }
+
+    _zoneAt(x, y) {
+      for (const z of this.zones) {
+        const r = z.getRect();
+        if (!r) continue;
+        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return z;
+      }
+      return null;
+    }
+
+    _tick(now) {
+      if (!this._running) return;
+
+      // Cooldown: ignore all input until it elapses.
+      if (this.state === STATE.COOLDOWN) {
+        if (now >= this.cooldownUntil) this._reset(STATE.IDLE);
+        this._emit(0);
+        return requestAnimationFrame(this._tick);
+      }
+
+      const p = this.point;
+      const zone = p ? this._zoneAt(p.x, p.y) : null;
+
+      if (!zone) {
+        // No zone under the point → back to idle.
+        if (this.state !== STATE.IDLE) this._reset(STATE.IDLE);
+        this._emit(0);
+        return requestAnimationFrame(this._tick);
+      }
+
+      if (zone.id !== this.zoneId) {
+        // Entered a new zone → (re)start the dwell clock.
+        this.state = STATE.HOVER;
+        this.zoneId = zone.id;
+        this.enterAt = now;
+        this._emit(0);
+        return requestAnimationFrame(this._tick);
+      }
+
+      // Same zone, still hovering → advance progress.
+      const progress = Math.min(1, (now - this.enterAt) / this.dwellMs);
+      if (progress >= 1) {
+        // FIRE, then enter cooldown.
+        this.onFire(zone);
+        this.state = STATE.COOLDOWN;
+        this.cooldownUntil = now + this.cooldownMs;
+        this.zoneId = null;
+        this.enterAt = 0;
+        this._emit(0);
+      } else {
+        this._emit(progress);
+      }
+      return requestAnimationFrame(this._tick);
+    }
+
+    _emit(progress) {
+      this.onState({ state: this.state, zoneId: this.zoneId, progress });
+    }
+  }
+
+  NS.DwellEngine = DwellEngine;
+  NS.DWELL_STATE = STATE;
+})();

@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "Drishti 2.0 — Gaze + Voice Browser Companion",
+  "version": "0.1.0",
+  "description": "Hands-free browsing for motor-impaired users: ~6 large gaze buttons + voice, instead of a gaze keyboard.",
+  "minimum_chrome_version": "116",
+
+  "background": {
+    "service_worker": "src/background/service-worker.js",
+    "type": "module"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": [
+        "src/content/platform.js",
+        "src/content/dwell.js",
+        "src/content/sidebar.js",
+        "src/content/gaze.js",
+        "src/content/content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+
+  "web_accessible_resources": [
+    {
+      "resources": ["src/gaze/frame.html"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
+
+  "action": {
+    "default_title": "Drishti 2.0"
+  }
+}

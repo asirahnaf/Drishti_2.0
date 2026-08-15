@@ -1,0 +1,12 @@
+# Machine-local Claude Code settings (not shared)
+.claude/
+
+# Large dev-capture media — kept on disk locally, excluded from the repo to keep it
+# lean. If you want a demo video tracked, attach it to a GitHub Release instead.
+*.mp4
+Screenshot*.png
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+Desktop.ini
