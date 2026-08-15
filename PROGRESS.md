@@ -1,9 +1,10 @@
 # Drishti 2.0 — Progress & Resume Notes
 
-**Last worked:** 2026-08-04
-**Resume at:** Step 3 — ONE fix left: MediaPipe WASM needs `'unsafe-eval'`, which MV3
-forbids in `extension_pages` CSP. Fix = make the gaze frame a **sandboxed page**
-(sandbox CSP allows `unsafe-eval`). Details in "STEP 3 — LAST BLOCKER" below.
+**Last worked:** 2026-08-15
+**Resume at:** Step 3 CSP blocker is **FIXED** (see "STEP 3 — LAST BLOCKER" below, now
+marked RESOLVED). Next: reload the extension and verify gaze end-to-end on your machine
+(camera → 9-dot calibration → look-to-fire). If the signal is shaky, tune the dwell time
+or try DroidCam, then move to Step 5 (audio/voice).
 
 This tracks the §9 build order from `Drishti_2.0_Plan.md`. Open that plan for the
 "why"; open this file for the "where we are".
@@ -28,7 +29,7 @@ This tracks the §9 build order from `Drishti_2.0_Plan.md`. Open that plan for t
 |------|------|--------|
 | 1 | Extension skeleton (MV3, service worker, content script) | ✅ Done |
 | 2 | Shadow-DOM sidebar + dwell state machine (mouse-driven) | ✅ Done |
-| 3 | **WebGazer integration + calibration** | 🟨 **~90% — 1 CSP fix left** |
+| 3 | **WebGazer integration + calibration** | 🟨 **CSP fix applied — verify gaze on-device** |
 | 4 | DOM-independent actions (scroll, copy-link, read-aloud) | ✅ Done |
 | 5 | Audio layer (SpeechRecognition voice input + Bengali) | ⬜ To do |
 | 6 | Tier 1 + Tier 2 APIs (YouTube + Mastodon, OAuth) | ⬜ To do |
@@ -89,7 +90,28 @@ full-viewport frame keeps gaze coords in viewport space (no rescaling).
    drivers ("HD Webcam" OK), and desktop-app consent were all already fine.
    (See memory note `edge-camera-blocked-globally`.)
 
-### THE LAST BLOCKER (fix this FIRST tomorrow):
+### ✅ RESOLVED (2026-08-15) — was: THE LAST BLOCKER
+
+**Fix applied (NOT the sandbox route):** the only real JS-eval site was MediaPipe's
+emscripten `createNamedFunction`, which used `new Function(...)` purely to name a function
+for stack traces. Patched both glue files (`face_mesh_solution_simd_wasm_bin.js` +
+`face_mesh_solution_wasm_bin.js`) to emscripten's eval-free variant:
+`return {[name]:function(){return body.apply(this,arguments)}}[name]`. No `unsafe-eval`
+needed, so the manifest CSP is unchanged and the frame stays a normal extension-origin
+page — **camera + `chrome.*` keep working** (sandboxing would have broken the camera via
+an opaque origin). The other apparent eval sites are safe: `new WebAssembly.Function` is
+covered by `wasm-unsafe-eval`, and WebGazer's lone `new Function("return this")` is dead
+code on Chrome/Edge 116+ (guarded by a `globalThis` check + wrapped in try/catch).
+
+Verify: reload the card → open frame DevTools (edge://extensions → Drishti → Inspect
+views: frame.html) → enable gaze → the `EvalError … createNamedFunction` should be gone
+and the 9-dot calibration should appear. If a *different* error shows, capture it.
+
+Original error + the abandoned sandbox plan are kept below for history.
+
+---
+
+### (history) THE LAST BLOCKER (the sandbox plan we did NOT need):
 
 Console error from the **frame's** DevTools (edge://extensions → Drishti → Inspect
 views → frame.html):
