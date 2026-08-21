@@ -43,16 +43,12 @@ flowchart TD
     classDef wip  fill:#8a6d00,stroke:#f1c40f,color:#ffffff;
     classDef todo fill:#2f3339,stroke:#7f8c8d,color:#d0d4d8;
 
-    class Mouse,Dwell,Sidebar,Fire,Scroll,Share,Read done;
-    class Gaze wip;
+    class Mouse,Gaze,Dwell,Sidebar,Fire,Scroll,Share,Read done;
     class Site,API,Voice,LiveShare todo;
 ```
 
-**Working today:** mouse-driven dwell control, the 8-button Shadow-DOM sidebar, and
-the DOM-independent actions — scroll, copy-link, and read-aloud.
-**In progress:** gaze input (camera + calibration work; one MV3 CSP fix remains — see
-[`PROGRESS.md`](./PROGRESS.md)).
-**Next:** the voice layer, then the YouTube/Mastodon site APIs.
+**Working today:** Mouse-driven fallback and gaze-driven control, 720p HD eye-tracking with temporal calibration, magnetic cursor snapping, the 8-button Shadow-DOM sidebar, and the DOM-independent actions (scroll, copy-link, and read-aloud).
+**Next:** The voice layer, then the YouTube/Mastodon site APIs.
 
 ## Load the extension
 
@@ -112,8 +108,8 @@ Chrome Web Store, so don't test there.
 Progress follows §9 of the plan, one step at a time:
 
 1. ✅ Extension skeleton (MV3, service worker, content script)
-2. ✅ Shadow-DOM sidebar + dwell state machine (mouse-simulated)
-3. 🟨 WebGazer integration + calibration *(camera + calibration work; one MV3 CSP fix left)*
+2. ✅ Shadow-DOM sidebar + dwell state machine (mouse and gaze driven)
+3. ✅ WebGazer integration + calibration (720p HD, temporal sampling, magnetic snapping, zero-eval CSP patch)
 4. ✅ DOM-independent actions (scroll, copy-link, read-aloud)
 5. ⬜ Audio layer (SpeechSynthesis + SpeechRecognition)
 6. ⬜ Tier 1 + Tier 2 APIs (YouTube + Mastodon)

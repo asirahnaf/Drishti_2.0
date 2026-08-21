@@ -58,13 +58,21 @@
     .btn.fired { background: rgba(64, 255, 148, 0.28); }
     .glyph { font-size: 26px; line-height: 1; }
     .label { font-size: 12px; font-weight: 600; letter-spacing: 0.2px; }
-    .ring { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+    .ring {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      width: 76%; height: auto;
+      aspect-ratio: 1 / 1;
+      max-height: 80%;
+      pointer-events: none;
+    }
     .ring-track { fill: none; stroke: rgba(255,255,255,0.10); stroke-width: 5; }
     .ring-fill {
       fill: none; stroke: #40c4ff; stroke-width: 5; stroke-linecap: round;
       transform: rotate(-90deg); transform-origin: 50% 50%;
-      stroke-dasharray: ${RING_C.toFixed(3)};
-      stroke-dashoffset: ${RING_C.toFixed(3)};
+      stroke-dasharray: ${RING_C.toFixed(3)}px;
+      stroke-dashoffset: ${RING_C.toFixed(3)}px;
     }
     .toast {
       position: fixed; bottom: 18px; right: 124px;
@@ -87,6 +95,18 @@
     .gaze-toggle.on { border-color: #2ecc71; background: rgba(46,204,113,0.18); }
     .gaze-toggle .dot { width: 8px; height: 8px; border-radius: 50%; background: #888; }
     .gaze-toggle.on .dot { background: #2ecc71; }
+    .gaze-cursor {
+      position: fixed;
+      width: 18px; height: 18px;
+      border-radius: 50%;
+      background: rgba(64, 196, 255, 0.45);
+      border: 2px solid #ffffff;
+      box-shadow: 0 0 8px rgba(64, 196, 255, 0.8);
+      pointer-events: none;
+      z-index: 2147483647;
+      display: none;
+      transform: translate(-50%, -50%);
+    }
   `;
   class Sidebar {
     /** @param {HTMLElement} host  the #drishti-host node from content.js */
@@ -143,6 +163,11 @@
       this.toastEl = document.createElement("div");
       this.toastEl.className = "toast";
       this.root.append(this.toastEl);
+
+      // Visual gaze feedback cursor
+      this.gazeCursor = document.createElement("div");
+      this.gazeCursor.className = "gaze-cursor";
+      this.root.append(this.gazeCursor);
     }
 
     /** Zones for the dwell engine: id + a live getRect() (recomputed each hit-test). */
@@ -150,7 +175,15 @@
       return BUTTONS.map((b) => ({
         id: b.id,
         action: b.id,
-        getRect: () => this.buttons.get(b.id).el.getBoundingClientRect(),
+        getRect: () => {
+          const r = this.buttons.get(b.id).el.getBoundingClientRect();
+          return {
+            left: r.left - 250, // Expand hitbox horizontally to the left by 250px (Fitts' Law)
+            right: r.right,
+            top: r.top,
+            bottom: r.bottom,
+          };
+        },
       }));
     }
 
@@ -160,7 +193,19 @@
         const active = id === zoneId;
         el.classList.toggle("hovering", active);
         const offset = active ? RING_C * (1 - progress) : RING_C;
-        ringFill.style.strokeDashoffset = offset.toFixed(3);
+        ringFill.style.strokeDashoffset = `${offset.toFixed(3)}px`;
+      }
+    }
+
+    /** Move and show/hide the visual gaze cursor dot. */
+    updateGazeCursor(x, y, show) {
+      if (!this.gazeCursor) return;
+      if (show) {
+        this.gazeCursor.style.display = "block";
+        this.gazeCursor.style.left = `${x}px`;
+        this.gazeCursor.style.top = `${y}px`;
+      } else {
+        this.gazeCursor.style.display = "none";
       }
     }
 

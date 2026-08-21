@@ -1,10 +1,7 @@
 # Drishti 2.0 — Progress & Resume Notes
 
-**Last worked:** 2026-08-15
-**Resume at:** Step 3 CSP blocker is **FIXED** (see "STEP 3 — LAST BLOCKER" below, now
-marked RESOLVED). Next: reload the extension and verify gaze end-to-end on your machine
-(camera → 9-dot calibration → look-to-fire). If the signal is shaky, tune the dwell time
-or try DroidCam, then move to Step 5 (audio/voice).
+**Last worked:** 2026-08-21
+**Resume at:** Step 3 (Gaze & Calibration) and Step 4 (DOM Actions) are fully **verified and operational**. Gaze tracking has been stabilized with 720p HD constraints, 10x temporal calibration sampling (3 clicks/dot), magnetic snapped visual cursors, and dwell hysteresis drainage. Next: Step 5 (audio/voice layer with SpeechSynthesis and SpeechRecognition supporting Bengali).
 
 This tracks the §9 build order from `Drishti_2.0_Plan.md`. Open that plan for the
 "why"; open this file for the "where we are".
@@ -29,7 +26,7 @@ This tracks the §9 build order from `Drishti_2.0_Plan.md`. Open that plan for t
 |------|------|--------|
 | 1 | Extension skeleton (MV3, service worker, content script) | ✅ Done |
 | 2 | Shadow-DOM sidebar + dwell state machine (mouse-driven) | ✅ Done |
-| 3 | **WebGazer integration + calibration** | 🟨 **CSP fix applied — verify gaze on-device** |
+| 3 | **WebGazer integration + calibration** | ✅ Done (720p, temporal sampling, snapping) |
 | 4 | DOM-independent actions (scroll, copy-link, read-aloud) | ✅ Done |
 | 5 | Audio layer (SpeechRecognition voice input + Bengali) | ⬜ To do |
 | 6 | Tier 1 + Tier 2 APIs (YouTube + Mastodon, OAuth) | ⬜ To do |

@@ -167,9 +167,14 @@
       return;
     }
 
+    let lastMouseMoveTime = 0;
+
     // Input driver #1: the mouse. Always on as the fallback (§2 redundancy) — even
     // with gaze enabled, the mouse can still drive the same dwell engine.
-    window.addEventListener("mousemove", (e) => dwell.update(e.clientX, e.clientY), {
+    window.addEventListener("mousemove", (e) => {
+      lastMouseMoveTime = Date.now();
+      dwell.update(e.clientX, e.clientY);
+    }, {
       passive: true,
     });
     document.addEventListener("mouseleave", () => dwell.clearPoint(), { passive: true });
@@ -177,15 +182,56 @@
     // Input driver #2: gaze (Step 3). Lazy/opt-in — WebGazer only starts when the
     // user flips the sidebar toggle. It feeds the SAME dwell.update(x, y), so the
     // hover → ring → fire flow is identical to the mouse.
+    let smoothedX = null;
+    let smoothedY = null;
+    const ALPHA = 0.22; // Constant fast and responsive smoothing factor
+
     const { GazeController } = window.Drishti || {};
     if (GazeController) {
       const gaze = new GazeController({
-        onGaze: (x, y) => dwell.update(x, y),
+        onGaze: (x, y) => {
+          if (Date.now() - lastMouseMoveTime > 1500) {
+            if (smoothedX === null || smoothedY === null) {
+              smoothedX = x;
+              smoothedY = y;
+            } else {
+              smoothedX = ALPHA * x + (1 - ALPHA) * smoothedX;
+              smoothedY = ALPHA * y + (1 - ALPHA) * smoothedY;
+            }
+
+            // Magnetic Snapping: if the dwell engine is hovering a button,
+            // lock the visual cursor onto the center of that button.
+            if (dwell.zoneId) {
+              const btnObj = sidebar.buttons.get(dwell.zoneId);
+              if (btnObj?.el) {
+                const r = btnObj.el.getBoundingClientRect();
+                const centerX = r.left + r.width / 2;
+                const centerY = r.top + r.height / 2;
+                sidebar.updateGazeCursor(centerX, centerY, true);
+              } else {
+                sidebar.updateGazeCursor(smoothedX, smoothedY, true);
+              }
+            } else {
+              sidebar.updateGazeCursor(smoothedX, smoothedY, true);
+            }
+
+            dwell.update(smoothedX, smoothedY);
+          } else {
+            smoothedX = null;
+            smoothedY = null;
+            sidebar.updateGazeCursor(0, 0, false);
+          }
+        },
         toast: (m, ms) => sidebar.toast(m, ms),
       });
       sidebar.onGazeToggle(async () => {
         const on = await gaze.toggle();
         sidebar.setGazeState(on);
+        if (!on) {
+          sidebar.updateGazeCursor(0, 0, false);
+          smoothedX = null;
+          smoothedY = null;
+        }
         // Persist the preference so later sessions remember it.
         try {
           await send(MSG.SET_SETTINGS, { patch: { gazeEnabled: on } });
