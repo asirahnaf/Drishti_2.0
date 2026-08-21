@@ -95,7 +95,12 @@
           this._resolveLoaded?.(true);
           break;
         case "gaze":
-          if (this.running) this.onGaze(d.x, d.y);
+          if (this.running) {
+            if (Math.random() < 0.05) { // throttle logs
+              console.warn(`[Drishti/gaze] Received gaze: x=${d.x.toFixed(1)}, y=${d.y.toFixed(1)}`);
+            }
+            this.onGaze(d.x, d.y);
+          }
           break;
         case "ready":
           this._startWaiters?.resolve(true);
@@ -183,6 +188,12 @@
      * The user looks at each dot and clicks it 5×; each click forwards the dot's
      * viewport coords to the frame, which records the eye→screen sample.
      */
+    /**
+     * 9-dot calibration overlay (on the page, so points span the real viewport).
+     * Guides the user sequentially through the 9 dots. The user looks at the active
+     * pulsing dot and clicks it 5× (or presses Spacebar). Each click forwards the
+     * dot's viewport coords to the frame.
+     */
     calibrate() {
       return new Promise((resolve) => {
         this._removeOverlay();
@@ -194,58 +205,152 @@
           "background:rgba(8,10,16,0.72)", "backdrop-filter:blur(2px)",
         ].join(";");
 
+        // Inject styles for active, inactive, and completed states + pulse animation.
+        const style = document.createElement("style");
+        style.textContent = `
+          @keyframes drishti-pulse {
+            0% { transform: translate(-50%, -50%) scale(1.1); box-shadow: 0 0 0 0 rgba(231, 76, 60, 0.7); }
+            70% { transform: translate(-50%, -50%) scale(1.25); box-shadow: 0 0 0 10px rgba(231, 76, 60, 0); }
+            100% { transform: translate(-50%, -50%) scale(1.1); box-shadow: 0 0 0 0 rgba(231, 76, 60, 0); }
+          }
+          .drishti-dot {
+            position: absolute;
+            width: 34px; height: 34px; border-radius: 50%;
+            border: 3px solid #fff; cursor: pointer;
+            transition: opacity 150ms, background-color 150ms, transform 150ms;
+            box-sizing: border-box;
+          }
+          .drishti-dot.active {
+            background-color: #e74c3c;
+            opacity: 1;
+            animation: drishti-pulse 1.4s infinite;
+            z-index: 10;
+          }
+          .drishti-dot.inactive {
+            background-color: rgba(127, 140, 141, 0.4);
+            border-color: rgba(255, 255, 255, 0.3);
+            opacity: 0.25;
+            cursor: not-allowed;
+            pointer-events: none;
+            transform: translate(-50%, -50%) scale(0.95);
+          }
+          .drishti-dot.completed {
+            background-color: #2ecc71;
+            border-color: #fff;
+            opacity: 0.8;
+            cursor: not-allowed;
+            pointer-events: none;
+            transform: translate(-50%, -50%) scale(0.9);
+          }
+        `;
+        overlay.appendChild(style);
+
         const help = document.createElement("div");
         help.textContent =
-          "Calibrate: look at each dot and click it (5 clicks each). Remaining: 9";
+          "Calibrate: look at the active pulsing dot and click it (or press Spacebar) 3 times. Remaining: 9";
         help.style.cssText = [
           "position:absolute", "top:16px", "left:50%", "transform:translateX(-50%)",
           "color:#fff", "font:600 15px system-ui,sans-serif",
           "background:rgba(12,14,20,0.9)", "padding:8px 14px", "border-radius:10px",
+          "text-align:center", "box-shadow: 0 4px 12px rgba(0,0,0,0.3)"
         ].join(";");
         overlay.appendChild(help);
 
-        const cols = [0.1, 0.5, 0.9];
+        const cols = [0.1, 0.5, 0.95];
         const rows = [0.12, 0.5, 0.88];
         const points = [];
         for (const ry of rows) for (const cx of cols) points.push({ cx, ry });
 
-        let remaining = points.length;
-        points.forEach(({ cx, ry }) => {
-          const dot = document.createElement("button");
-          let clicks = 0;
-          dot.style.cssText = [
-            "position:absolute",
-            `left:${cx * 100}%`, `top:${ry * 100}%`, "transform:translate(-50%,-50%)",
-            "width:34px", "height:34px", "border-radius:50%",
-            "border:3px solid #fff", "background:#e74c3c", "cursor:pointer",
-            "opacity:0.45", "transition:opacity 120ms,background 120ms",
-          ].join(";");
-          dot.addEventListener("click", () => {
-            clicks++;
-            dot.style.opacity = String(0.45 + clicks * 0.11);
-            // Forward the point the user is looking at (dot center in viewport px).
-            const r = dot.getBoundingClientRect();
-            this._post("calibrate", { x: r.left + r.width / 2, y: r.top + r.height / 2 });
-            if (clicks >= 5) {
-              dot.style.background = "#2ecc71";
+        let activePointIndex = 0;
+        const dots = [];
+
+        const updateActiveDot = () => {
+          dots.forEach((dot, i) => {
+            dot.className = "drishti-dot";
+            if (i === activePointIndex) {
+              dot.classList.add("active");
+              dot.disabled = false;
+            } else if (i < activePointIndex) {
+              dot.classList.add("completed");
               dot.disabled = true;
-              remaining--;
-              help.textContent =
-                remaining > 0
-                  ? `Calibrate: look at each dot and click it. Remaining: ${remaining}`
-                  : "Calibration complete — you can look to control now.";
-              if (remaining === 0) {
-                setTimeout(() => {
-                  this._removeOverlay();
-                  this.toast("Gaze ready — look at a button to activate it", 4000);
-                  resolve(true);
-                }, 700);
-              }
+            } else {
+              dot.classList.add("inactive");
+              dot.disabled = true;
             }
           });
+        };
+
+        points.forEach(({ cx, ry }, index) => {
+          const dot = document.createElement("button");
+          dot.style.left = `${cx * 100}%`;
+          dot.style.top = `${ry * 100}%`;
+          dot.style.transform = "translate(-50%,-50%)";
+          
+          let clicks = 0;
+          let isSampling = false;
+          dot.addEventListener("click", () => {
+            if (index !== activePointIndex || isSampling) return;
+            isSampling = true;
+            clicks++;
+            
+            // Visual feedback: shrink the dot to show progress
+            dot.style.transform = `translate(-50%,-50%) scale(${1 - clicks * 0.15})`;
+            dot.style.opacity = String(0.7 + clicks * 0.08);
+            
+            const r = dot.getBoundingClientRect();
+            const dotX = r.left + r.width / 2;
+            const dotY = r.top + r.height / 2;
+
+            // Temporal Calibration Sampling:
+            // Send 10 coordinates spaced 50ms apart while the user looks at the dot.
+            // This provides 10 distinct eye feature samples to the regression solver.
+            let samples = 0;
+            const interval = setInterval(() => {
+              this._post("calibrate", { x: dotX, y: dotY });
+              samples++;
+              
+              if (samples >= 10) {
+                clearInterval(interval);
+                isSampling = false;
+                
+                if (clicks >= 3) {
+                  activePointIndex++;
+                  help.textContent =
+                    activePointIndex < points.length
+                      ? `Calibrate: look at the active pulsing dot and click it (or press Spacebar) 3 times. Remaining: ${points.length - activePointIndex}`
+                      : "Calibration complete — you can look to control now.";
+                  
+                  updateActiveDot();
+                  
+                  if (activePointIndex === points.length) {
+                    setTimeout(() => {
+                      this._removeOverlay();
+                      this.toast("Gaze ready — look at a button to activate it", 4000);
+                      resolve(true);
+                    }, 700);
+                  }
+                }
+              }
+            }, 50);
+          });
           overlay.appendChild(dot);
+          dots.push(dot);
         });
 
+        const onKeyDown = (e) => {
+          if (e.code === "Space") {
+            e.preventDefault();
+            const activeDot = dots[activePointIndex];
+            if (activeDot) {
+              activeDot.click();
+            }
+          }
+        };
+
+        this._onKeyDown = onKeyDown;
+        window.addEventListener("keydown", onKeyDown);
+
+        updateActiveDot();
         (document.body || document.documentElement).appendChild(overlay);
         this._overlay = overlay;
       });
@@ -255,6 +360,10 @@
       if (this._overlay) {
         this._overlay.remove();
         this._overlay = null;
+      }
+      if (this._onKeyDown) {
+        window.removeEventListener("keydown", this._onKeyDown);
+        this._onKeyDown = null;
       }
     }
   }

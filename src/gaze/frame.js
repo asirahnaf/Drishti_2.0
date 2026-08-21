@@ -48,6 +48,15 @@
       return;
     }
 
+    try {
+      localStorage.clear();
+      if (typeof wg.clearData === "function") {
+        wg.clearData();
+      }
+    } catch (e) {
+      console.warn("[Drishti/frame] failed to clear stale webgazer data:", e);
+    }
+
     // Preflight the camera OURSELVES first, so we get the exact DOMException name
     // instead of WebGazer's vague "No stream" / "Permission denied". This is the
     // same getUserMedia WebGazer will use, just with precise error reporting.
@@ -65,12 +74,30 @@
     }
 
     try {
+      // Request high resolution camera feed (720p/1080p) to capture sharper facial/eye features
+      wg.params.camConstraints = {
+        video: {
+          width: { min: 640, ideal: 1280, max: 1920 },
+          height: { min: 480, ideal: 720, max: 1080 },
+          facingMode: "user"
+        }
+      };
+
       // Point the FaceMesh solution at our BUNDLED assets (absolute extension URL).
       // WebGazer's locateFile does: solutionPath.replace(/\/+$/,'') + '/' + filename,
       // so this yields chrome-extension://<id>/src/vendor/mediapipe/face_mesh/<file>.
       wg.params.faceMeshSolutionPath = ext.runtime.getURL("src/vendor/mediapipe/face_mesh");
       // Persist regression data across sessions so calibration isn't lost on reload.
       wg.saveDataAcrossSessions(true);
+
+      // Disable Kalman filter to avoid double-filtering lag (we use our own fast EMA filter)
+      try {
+        if (typeof wg.applyKalmanFilter === "function") {
+          wg.applyKalmanFilter(false);
+        }
+      } catch (e) {
+        console.warn("[Drishti/frame] failed to disable Kalman filter:", e);
+      }
 
       // We draw our own UI. Keep WebGazer's overlays off; optional tiny video pip
       // only if the parent asked for it (helps the user center their face).

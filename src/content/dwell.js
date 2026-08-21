@@ -60,6 +60,7 @@
     start() {
       if (this._running) return;
       this._running = true;
+      this.lastTickTime = performance.now();
       requestAnimationFrame(this._tick);
     }
 
@@ -71,7 +72,8 @@
     _reset(state) {
       this.state = state;
       this.zoneId = null;
-      this.enterAt = 0;
+      this.progress = 0;
+      this.lastTickTime = 0;
     }
 
     _zoneAt(x, y) {
@@ -86,9 +88,14 @@
     _tick(now) {
       if (!this._running) return;
 
+      const dt = this.lastTickTime ? (now - this.lastTickTime) : 16;
+      this.lastTickTime = now;
+
       // Cooldown: ignore all input until it elapses.
       if (this.state === STATE.COOLDOWN) {
-        if (now >= this.cooldownUntil) this._reset(STATE.IDLE);
+        if (now >= this.cooldownUntil) {
+          this._reset(STATE.IDLE);
+        }
         this._emit(0);
         return requestAnimationFrame(this._tick);
       }
@@ -96,35 +103,54 @@
       const p = this.point;
       const zone = p ? this._zoneAt(p.x, p.y) : null;
 
-      if (!zone) {
-        // No zone under the point → back to idle.
-        if (this.state !== STATE.IDLE) this._reset(STATE.IDLE);
-        this._emit(0);
-        return requestAnimationFrame(this._tick);
-      }
+      if (zone) {
+        if (zone.id !== this.zoneId) {
+          // Switched to a new zone
+          this.zoneId = zone.id;
+          this.state = STATE.HOVER;
+          this.progress = 0;
+        }
 
-      if (zone.id !== this.zoneId) {
-        // Entered a new zone → (re)start the dwell clock.
-        this.state = STATE.HOVER;
-        this.zoneId = zone.id;
-        this.enterAt = now;
-        this._emit(0);
-        return requestAnimationFrame(this._tick);
-      }
+        // Accumulate progress
+        this.progress = Math.min(1, this.progress + dt / this.dwellMs);
 
-      // Same zone, still hovering → advance progress.
-      const progress = Math.min(1, (now - this.enterAt) / this.dwellMs);
-      if (progress >= 1) {
-        // FIRE, then enter cooldown.
-        this.onFire(zone);
-        this.state = STATE.COOLDOWN;
-        this.cooldownUntil = now + this.cooldownMs;
-        this.zoneId = null;
-        this.enterAt = 0;
-        this._emit(0);
+        if (p) {
+          console.warn(`[Drishti/dwell] Point (${p.x.toFixed(1)}, ${p.y.toFixed(1)}) is IN zone: ${zone.id}, progress: ${this.progress.toFixed(2)}`);
+        }
+
+        if (this.progress >= 1) {
+          // FIRE
+          this.onFire(zone);
+          this.state = STATE.COOLDOWN;
+          this.cooldownUntil = now + this.cooldownMs;
+          this.zoneId = null;
+          this.progress = 0;
+          this._emit(0);
+        } else {
+          this._emit(this.progress);
+        }
       } else {
-        this._emit(progress);
+        // No zone: slowly decay progress (drain over 500ms)
+        if (this.progress > 0) {
+          this.progress = Math.max(0, this.progress - dt / 500);
+          this._emit(this.progress);
+          
+          if (p && Math.random() < 0.02) {
+            console.warn(`[Drishti/dwell] Point (${p.x.toFixed(1)}, ${p.y.toFixed(1)}) is OUT of zones. Draining progress: ${this.progress.toFixed(2)}`);
+          }
+        } else {
+          if (this.state !== STATE.IDLE) {
+            this.state = STATE.IDLE;
+            this.zoneId = null;
+          }
+          this._emit(0);
+          
+          if (p && Math.random() < 0.02) {
+            console.warn(`[Drishti/dwell] Point (${p.x.toFixed(1)}, ${p.y.toFixed(1)}) is OUT of zones. Idle.`);
+          }
+        }
       }
+
       return requestAnimationFrame(this._tick);
     }
 
