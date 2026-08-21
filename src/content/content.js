@@ -106,6 +106,23 @@
   function makeFireHandler(sidebar) {
     return (zone) => {
       sidebar.flashFire(zone.id);
+
+      // Reinforcement Calibration on Fire:
+      // Since the button successfully fired, we have 100% certainty the user
+      // was looking at it. Send a high-quality calibration point to WebGazer!
+      try {
+        const gaze = window.__drishti?.gaze;
+        const btnObj = sidebar.buttons.get(zone.id);
+        if (gaze && btnObj?.el) {
+          const r = btnObj.el.getBoundingClientRect();
+          const centerX = r.left + r.width / 2;
+          const centerY = r.top + r.height / 2;
+          gaze._post("calibrate", { x: centerX, y: centerY });
+        }
+      } catch (e) {
+        // Safe fail
+      }
+
       switch (zone.id) {
         case "up":
           window.scrollBy({ top: -0.8 * window.innerHeight, behavior: "smooth" });
