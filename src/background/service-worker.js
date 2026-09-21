@@ -15,6 +15,7 @@ const MSG = {
   PING: "drishti:ping",
   GET_SETTINGS: "drishti:get-settings",
   SET_SETTINGS: "drishti:set-settings",
+  CAPTURE_SCREENSHOT: "drishti:capture-screenshot",
 };
 
 // Defaults locked from the plan (§10 open questions): dwell 750ms, cooldown 400ms.
@@ -57,6 +58,32 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: true, settings })
       );
       return true;
+
+    case MSG.CAPTURE_SCREENSHOT: {
+      const winId = sender.tab?.windowId || null;
+      ext.tabs.captureVisibleTab(winId, { format: "png" }, (dataUrl) => {
+        const lastErr = ext.runtime.lastError;
+        if (lastErr || !dataUrl) {
+          sendResponse({ ok: false, error: lastErr?.message || "capture failed" });
+          return;
+        }
+        if (ext.downloads) {
+          const filename = `drishti-screenshot-${Date.now()}.png`;
+          ext.downloads.download({ url: dataUrl, filename, saveAs: false }, (downloadId) => {
+            const dlErr = ext.runtime.lastError;
+            if (dlErr) {
+              console.warn("[Drishti] chrome.downloads failed, falling back:", dlErr);
+              sendResponse({ ok: true, dataUrl });
+            } else {
+              sendResponse({ ok: true, downloaded: true, downloadId, filename });
+            }
+          });
+        } else {
+          sendResponse({ ok: true, dataUrl });
+        }
+      });
+      return true;
+    }
 
     default:
       sendResponse({ ok: false, error: `unknown message type: ${message?.type}` });

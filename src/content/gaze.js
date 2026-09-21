@@ -30,8 +30,10 @@
      * @param {(x:number,y:number)=>void} opts.onGaze  viewport gaze coords
      * @param {(msg:string, ms?:number)=>void} opts.toast  user-facing status
      */
-    constructor({ onGaze, toast }) {
+    constructor({ onGaze, onGesture, onCalibComplete, toast }) {
       this.onGaze = onGaze || (() => {});
+      this.onGesture = onGesture || (() => {});
+      this.onCalibComplete = onCalibComplete || (() => {});
       this.toast = toast || (() => {});
       this.running = false;
       this.iframe = null;
@@ -95,12 +97,24 @@
           this._resolveLoaded?.(true);
           break;
         case "gaze":
-          if (this.running) {
-            if (Math.random() < 0.05) { // throttle logs
-              console.warn(`[Drishti/gaze] Received gaze: x=${d.x.toFixed(1)}, y=${d.y.toFixed(1)}`);
-            }
+          if (this.running && !this._isCalibrating) {
             this.onGaze(d.x, d.y);
           }
+          break;
+        case "calibSample":
+          // Frame reports current calibration sample count
+          break;
+        case "gesture":
+          if (this.running && this.onGesture) {
+            this.onGesture(d.gesture, d.score);
+          }
+          break;
+        case "status":
+          console.info(`[Drishti] ${d.msg}`);
+          break;
+        case "toast":
+          console.log(`[Drishti Toast] ${d.msg}`);
+          this.toast(d.msg, d.ms);
           break;
         case "ready":
           this._startWaiters?.resolve(true);
@@ -197,57 +211,89 @@
     calibrate() {
       return new Promise((resolve) => {
         this._removeOverlay();
+        this._isCalibrating = true;
+        this._post("calibStart");
 
         const overlay = document.createElement("div");
         overlay.id = "drishti-calibration";
         overlay.style.cssText = [
-          "position:fixed", "inset:0", "z-index:2147483646",
+          "position:fixed", "inset:0", "z-index:2147483648",
           "background:rgba(8,10,16,0.72)", "backdrop-filter:blur(2px)",
         ].join(";");
 
-        // Inject styles for active, inactive, and completed states + pulse animation.
+        // Inject styles for active, inactive, completed states and circular progress ring.
         const style = document.createElement("style");
         style.textContent = `
-          @keyframes drishti-pulse {
-            0% { transform: translate(-50%, -50%) scale(1.1); box-shadow: 0 0 0 0 rgba(231, 76, 60, 0.7); }
-            70% { transform: translate(-50%, -50%) scale(1.25); box-shadow: 0 0 0 10px rgba(231, 76, 60, 0); }
-            100% { transform: translate(-50%, -50%) scale(1.1); box-shadow: 0 0 0 0 rgba(231, 76, 60, 0); }
+          @keyframes drishti-core-pulse {
+            0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(231, 76, 60, 0.7); }
+            70% { transform: scale(1.15); box-shadow: 0 0 0 8px rgba(231, 76, 60, 0); }
+            100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(231, 76, 60, 0); }
           }
           .drishti-dot {
             position: absolute;
-            width: 34px; height: 34px; border-radius: 50%;
-            border: 3px solid #fff; cursor: pointer;
-            transition: opacity 150ms, background-color 150ms, transform 150ms;
+            width: 50px; height: 50px;
+            transform: translate(-50%, -50%);
+            display: flex; align-items: center; justify-content: center;
+            cursor: pointer;
             box-sizing: border-box;
+            user-select: none;
+            transition: opacity 200ms ease;
           }
-          .drishti-dot.active {
-            background-color: #e74c3c;
-            opacity: 1;
-            animation: drishti-pulse 1.4s infinite;
-            z-index: 10;
+          .drishti-dot-ring {
+            position: absolute;
+            inset: 0;
+            width: 100%; height: 100%;
+            transform: rotate(-90deg);
+          }
+          .drishti-dot-ring .ring-track {
+            stroke: rgba(255, 255, 255, 0.18);
+            stroke-width: 3.5;
+            fill: none;
+          }
+          .drishti-dot-ring .ring-fill {
+            stroke: #e74c3c;
+            stroke-width: 3.5;
+            fill: none;
+            stroke-dasharray: 125.66px;
+            stroke-dashoffset: 125.66px;
+            stroke-linecap: round;
+            transition: stroke-dashoffset 60ms linear, stroke 200ms;
+          }
+          .drishti-dot-core {
+            width: 16px; height: 16px; border-radius: 50%;
+            background: #e74c3c; border: 2px solid #ffffff;
+            transition: background 200ms, transform 150ms;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+          }
+          .drishti-dot.active .drishti-dot-core {
+            animation: drishti-core-pulse 1.2s infinite;
           }
           .drishti-dot.inactive {
-            background-color: rgba(127, 140, 141, 0.4);
-            border-color: rgba(255, 255, 255, 0.3);
             opacity: 0.25;
-            cursor: not-allowed;
-            pointer-events: none;
-            transform: translate(-50%, -50%) scale(0.95);
+            cursor: default;
+          }
+          .drishti-dot.inactive .drishti-dot-core {
+            background: #7f8c8d;
+            border-color: rgba(255,255,255,0.4);
           }
           .drishti-dot.completed {
-            background-color: #2ecc71;
-            border-color: #fff;
-            opacity: 0.8;
-            cursor: not-allowed;
-            pointer-events: none;
-            transform: translate(-50%, -50%) scale(0.9);
+            opacity: 0.85;
+            cursor: default;
+          }
+          .drishti-dot.completed .drishti-dot-core {
+            background: #2ecc71;
+            border-color: #ffffff;
+          }
+          .drishti-dot.completed .ring-fill {
+            stroke: #2ecc71 !important;
+            stroke-dashoffset: 0px !important;
           }
         `;
         overlay.appendChild(style);
 
         const help = document.createElement("div");
         help.textContent =
-          "Calibrate: look at the active pulsing dot and click it (or press Spacebar) 3 times. Remaining: 9";
+          "Calibrate: look steadily at the active dot. Calibration advances automatically. (1/9)";
         help.style.cssText = [
           "position:absolute", "top:16px", "left:50%", "transform:translateX(-50%)",
           "color:#fff", "font:600 15px system-ui,sans-serif",
@@ -256,7 +302,7 @@
         ].join(";");
         overlay.appendChild(help);
 
-        const cols = [0.1, 0.5, 0.95];
+        const cols = [0.1, 0.5, 0.9];
         const rows = [0.12, 0.5, 0.88];
         const points = [];
         for (const ry of rows) for (const cx of cols) points.push({ cx, ry });
@@ -264,99 +310,148 @@
         let activePointIndex = 0;
         const dots = [];
 
-        const updateActiveDot = () => {
-          dots.forEach((dot, i) => {
-            dot.className = "drishti-dot";
-            if (i === activePointIndex) {
-              dot.classList.add("active");
-              dot.disabled = false;
-            } else if (i < activePointIndex) {
-              dot.classList.add("completed");
-              dot.disabled = true;
-            } else {
-              dot.classList.add("inactive");
-              dot.disabled = true;
-            }
-          });
-        };
-
-        points.forEach(({ cx, ry }, index) => {
-          const dot = document.createElement("button");
+        points.forEach(({ cx, ry }) => {
+          const dot = document.createElement("div");
+          dot.className = "drishti-dot inactive";
           dot.style.left = `${cx * 100}%`;
           dot.style.top = `${ry * 100}%`;
-          dot.style.transform = "translate(-50%,-50%)";
-          
-          let clicks = 0;
-          let isSampling = false;
-          dot.addEventListener("click", () => {
-            if (index !== activePointIndex || isSampling) return;
-            isSampling = true;
-            clicks++;
-            
-            // Visual feedback: shrink the dot to show progress
-            dot.style.transform = `translate(-50%,-50%) scale(${1 - clicks * 0.15})`;
-            dot.style.opacity = String(0.7 + clicks * 0.08);
-            
-            const r = dot.getBoundingClientRect();
-            const dotX = r.left + r.width / 2;
-            const dotY = r.top + r.height / 2;
 
-            // Temporal Calibration Sampling:
-            // Send 10 coordinates spaced 50ms apart while the user looks at the dot.
-            // This provides 10 distinct eye feature samples to the regression solver.
+          dot.innerHTML = `
+            <svg class="drishti-dot-ring" viewBox="0 0 48 48" aria-hidden="true">
+              <circle class="ring-track" cx="24" cy="24" r="20"></circle>
+              <circle class="ring-fill" cx="24" cy="24" r="20"></circle>
+            </svg>
+            <div class="drishti-dot-core"></div>
+          `;
+
+          const ringFill = dot.querySelector(".ring-fill");
+          overlay.appendChild(dot);
+          dots.push({ dot, ringFill, cx, ry });
+        });
+
+        // Automatic calibration runner: settles on the dot, collects samples, and advances
+        const runCalibrationForPoint = (index) => {
+          if (index >= points.length) {
+            help.textContent = "Calibration complete — initializing gaze control...";
+            this._calibTimer = setTimeout(() => {
+              this._post("calibEnd");
+              this._isCalibrating = false;
+              this.onCalibComplete();
+              this._removeOverlay();
+              this.toast("Gaze ready — look at a button to activate it", 4000);
+              resolve(true);
+            }, 700);
+            return;
+          }
+
+          activePointIndex = index;
+          dots.forEach((d, i) => {
+            if (i === index) {
+              d.dot.className = "drishti-dot active";
+            } else if (i < index) {
+              d.dot.className = "drishti-dot completed";
+            } else {
+              d.dot.className = "drishti-dot inactive";
+            }
+          });
+
+          help.textContent = `Calibrate: keep head still & look directly at the dot center (${index + 1}/${points.length})`;
+
+          const dotObj = dots[index];
+          const r = dotObj.dot.getBoundingClientRect();
+          const dotX = r.left + r.width / 2;
+          const dotY = r.top + r.height / 2;
+
+          // 1. Settle phase (650ms): ensures user's saccade completes and eyes stabilize before recording
+          this._calibTimer = setTimeout(() => {
             let samples = 0;
-            const interval = setInterval(() => {
+            const totalSamples = 15; // 15 samples * 50ms = 750ms of clean steady fixation data
+
+            this._calibInterval = setInterval(() => {
               this._post("calibrate", { x: dotX, y: dotY });
               samples++;
-              
-              if (samples >= 10) {
-                clearInterval(interval);
-                isSampling = false;
-                
-                if (clicks >= 3) {
-                  activePointIndex++;
-                  help.textContent =
-                    activePointIndex < points.length
-                      ? `Calibrate: look at the active pulsing dot and click it (or press Spacebar) 3 times. Remaining: ${points.length - activePointIndex}`
-                      : "Calibration complete — you can look to control now.";
-                  
-                  updateActiveDot();
-                  
-                  if (activePointIndex === points.length) {
-                    setTimeout(() => {
-                      this._removeOverlay();
-                      this.toast("Gaze ready — look at a button to activate it", 4000);
-                      resolve(true);
-                    }, 700);
-                  }
-                }
+
+              const progress = samples / totalSamples;
+              const offset = (125.664 * (1 - progress)).toFixed(2);
+              dotObj.ringFill.style.strokeDashoffset = `${offset}px`;
+
+              if (samples >= totalSamples) {
+                clearInterval(this._calibInterval);
+                this._calibInterval = null;
+
+                // Completed state for this dot
+                dotObj.dot.className = "drishti-dot completed";
+                dotObj.ringFill.style.stroke = "#2ecc71";
+
+                // Brief pause before moving to the next dot
+                this._calibTimer = setTimeout(() => {
+                  runCalibrationForPoint(index + 1);
+                }, 200);
               }
             }, 50);
+          }, 650);
+        };
+
+        // Manual skip/advance override (Spacebar or click)
+        const advanceImmediately = () => {
+          if (activePointIndex >= points.length) return;
+          if (this._calibInterval) {
+            clearInterval(this._calibInterval);
+            this._calibInterval = null;
+          }
+          if (this._calibTimer) {
+            clearTimeout(this._calibTimer);
+            this._calibTimer = null;
+          }
+          const cur = dots[activePointIndex];
+          if (cur) {
+            const r = cur.dot.getBoundingClientRect();
+            for (let k = 0; k < 6; k++) {
+              this._post("calibrate", { x: r.left + r.width / 2, y: r.top + r.height / 2 });
+            }
+            cur.dot.className = "drishti-dot completed";
+            cur.ringFill.style.stroke = "#2ecc71";
+            cur.ringFill.style.strokeDashoffset = "0px";
+          }
+          runCalibrationForPoint(activePointIndex + 1);
+        };
+
+        dots.forEach((d, i) => {
+          d.dot.addEventListener("click", () => {
+            if (i === activePointIndex) advanceImmediately();
           });
-          overlay.appendChild(dot);
-          dots.push(dot);
         });
 
         const onKeyDown = (e) => {
           if (e.code === "Space") {
             e.preventDefault();
-            const activeDot = dots[activePointIndex];
-            if (activeDot) {
-              activeDot.click();
-            }
+            advanceImmediately();
           }
         };
 
         this._onKeyDown = onKeyDown;
         window.addEventListener("keydown", onKeyDown);
 
-        updateActiveDot();
         (document.body || document.documentElement).appendChild(overlay);
         this._overlay = overlay;
+
+        // Kick off automatic progression starting from dot 0
+        this._calibTimer = setTimeout(() => {
+          runCalibrationForPoint(0);
+        }, 500);
       });
     }
 
     _removeOverlay() {
+      this._isCalibrating = false;
+      if (this._calibTimer) {
+        clearTimeout(this._calibTimer);
+        this._calibTimer = null;
+      }
+      if (this._calibInterval) {
+        clearInterval(this._calibInterval);
+        this._calibInterval = null;
+      }
       if (this._overlay) {
         this._overlay.remove();
         this._overlay = null;

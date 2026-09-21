@@ -20,6 +20,7 @@
     PING: "drishti:ping",
     GET_SETTINGS: "drishti:get-settings",
     SET_SETTINGS: "drishti:set-settings",
+    CAPTURE_SCREENSHOT: "drishti:capture-screenshot",
   };
 
   const HOST_ID = "drishti-host";
@@ -100,28 +101,66 @@
     }
   }
 
+  // Multimodal Hand Gesture: Thumbs Up -> Like current item (e.g. YouTube like button)
+  function likeCurrentItem(sidebar) {
+    const ytLikeBtn = document.querySelector(
+      "like-button-view-model button, #segmented-like-button button, ytd-like-button-renderer button"
+    );
+    if (ytLikeBtn) {
+      ytLikeBtn.click();
+      sidebar.toast("👍 Thumbs Up: Liked YouTube video!");
+      return;
+    }
+
+    const genericLike = document.querySelector(
+      'button[aria-label*="like" i], button[aria-label*="favorite" i], [role="button"][aria-label*="like" i]'
+    );
+    if (genericLike) {
+      genericLike.click();
+      sidebar.toast("👍 Thumbs Up: Liked item!");
+      return;
+    }
+
+    sidebar.toast("👍 Thumbs Up detected!");
+  }
+
+  // Multimodal Hand Gesture: Open Palm -> Full page screenshot capture & download
+  async function takeScreenshot(sidebar) {
+    sidebar.toast("✋ Palm held: Capturing screenshot...", 2500);
+    try {
+      const res = await send(MSG.CAPTURE_SCREENSHOT);
+      if (!res?.ok) {
+        sidebar.toast("Screenshot failed: " + (res?.error || "unknown error"));
+        return;
+      }
+      if (res.downloaded) {
+        sidebar.toast("📸 Screenshot saved to Downloads!", 3000);
+        return;
+      }
+      if (res.dataUrl) {
+        const fetchRes = await fetch(res.dataUrl);
+        const blob = await fetchRes.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = blobUrl;
+        a.download = `drishti-screenshot-${Date.now()}.png`;
+        (document.body || document.documentElement).appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+        sidebar.toast("📸 Screenshot saved to Downloads!", 3000);
+      }
+    } catch (err) {
+      sidebar.toast("Screenshot error: " + (err?.message || err));
+    }
+  }
+
   // Step 2+: what happens when a zone fires. DOM-independent actions (scroll, share,
   // read-aloud) are wired now — they need no site markup so they never break (§4, §8).
   // Site-specific actions (like/comment/react) arrive with the APIs in Step 6.
   function makeFireHandler(sidebar) {
     return (zone) => {
       sidebar.flashFire(zone.id);
-
-      // Reinforcement Calibration on Fire:
-      // Since the button successfully fired, we have 100% certainty the user
-      // was looking at it. Send a high-quality calibration point to WebGazer!
-      try {
-        const gaze = window.__drishti?.gaze;
-        const btnObj = sidebar.buttons.get(zone.id);
-        if (gaze && btnObj?.el) {
-          const r = btnObj.el.getBoundingClientRect();
-          const centerX = r.left + r.width / 2;
-          const centerY = r.top + r.height / 2;
-          gaze._post("calibrate", { x: centerX, y: centerY });
-        }
-      } catch (e) {
-        // Safe fail
-      }
 
       switch (zone.id) {
         case "up":
@@ -137,9 +176,7 @@
           readAloud(sidebar);
           break;
         default:
-          // like, comment, reply, react — need site APIs (Step 6). Tell the user.
-          sidebar.toast(`"${zone.id}" needs the site login — coming in a later step`);
-          console.log(`[Drishti] FIRE '${zone.id}' — action arrives in a later step`);
+          console.log(`[Drishti] FIRE '${zone.id}'`);
       }
     };
   }
@@ -201,42 +238,94 @@
     // hover → ring → fire flow is identical to the mouse.
     let smoothedX = null;
     let smoothedY = null;
-    const ALPHA = 0.22; // Constant fast and responsive smoothing factor
+    let lastGestureTime = 0;
+    let lastGestureType = "";
 
     const { GazeController } = window.Drishti || {};
     if (GazeController) {
       const gaze = new GazeController({
         onGaze: (x, y) => {
           if (Date.now() - lastMouseMoveTime > 1500) {
+            const curX = Math.max(0, Math.min(window.innerWidth, x));
+            const curY = Math.max(0, Math.min(window.innerHeight, y));
+
             if (smoothedX === null || smoothedY === null) {
-              smoothedX = x;
-              smoothedY = y;
+              smoothedX = curX;
+              smoothedY = curY;
             } else {
-              smoothedX = ALPHA * x + (1 - ALPHA) * smoothedX;
-              smoothedY = ALPHA * y + (1 - ALPHA) * smoothedY;
+              const dx = curX - smoothedX;
+              const dy = curY - smoothedY;
+              const dist = Math.hypot(dx, dy);
+
+              // 1. Fixation Deadband: within 14px, keep pointer steady to eliminate micro-tremor vibration
+              if (dist >= 14) {
+                // 2. Controlled Damping Curve:
+                // Small movements (<45px): heavy damping (alpha 0.08) for stable button dwelling
+                // Medium shifts (45-150px): gentle cruise (alpha 0.14)
+                // Saccades (>150px): smooth glide (alpha 0.22)
+                let alpha;
+                if (dist < 45) {
+                  alpha = 0.08;
+                } else if (dist < 150) {
+                  alpha = 0.14;
+                } else {
+                  alpha = 0.22;
+                }
+
+                let step = alpha * dist;
+                // 3. Slew Rate Cap: max 36px per frame so the pointer never darts or flies wildly
+                const MAX_STEP_PX = 36;
+                if (step > MAX_STEP_PX) {
+                  step = MAX_STEP_PX;
+                }
+
+                smoothedX += (dx / dist) * step;
+                smoothedY += (dy / dist) * step;
+              }
             }
 
-            // Magnetic Snapping: if the dwell engine is hovering a button,
-            // lock the visual cursor onto the center of that button.
+            // Natural Smooth Gaze Tracking:
+            // Cursor follows smoothed gaze position. When hovering, gently bias 30% toward button center.
+            let cursorX = smoothedX;
+            let cursorY = smoothedY;
             if (dwell.zoneId) {
               const btnObj = sidebar.buttons.get(dwell.zoneId);
               if (btnObj?.el) {
                 const r = btnObj.el.getBoundingClientRect();
                 const centerX = r.left + r.width / 2;
                 const centerY = r.top + r.height / 2;
-                sidebar.updateGazeCursor(centerX, centerY, true);
-              } else {
-                sidebar.updateGazeCursor(smoothedX, smoothedY, true);
+                // Stronger magnetic pull (45%) locks the visual cursor onto the button center
+                cursorX = 0.55 * smoothedX + 0.45 * centerX;
+                cursorY = 0.55 * smoothedY + 0.45 * centerY;
               }
-            } else {
-              sidebar.updateGazeCursor(smoothedX, smoothedY, true);
             }
+            sidebar.updateGazeCursor(cursorX, cursorY, true);
 
             dwell.update(smoothedX, smoothedY);
           } else {
             smoothedX = null;
             smoothedY = null;
             sidebar.updateGazeCursor(0, 0, false);
+          }
+        },
+        onCalibComplete: () => {
+          smoothedX = null;
+          smoothedY = null;
+        },
+        onGesture: (gestureName, score) => {
+          const now = Date.now();
+          if (gestureName === lastGestureType && now - lastGestureTime < 2000) return;
+          if (now - lastGestureTime < 1000) return;
+
+          lastGestureTime = now;
+          lastGestureType = gestureName;
+
+          console.log(`[Drishti] Gesture recognized: ${gestureName} (${(score * 100).toFixed(0)}%)`);
+
+          if (gestureName === "Thumb_Up") {
+            likeCurrentItem(sidebar);
+          } else if (gestureName === "Open_Palm") {
+            takeScreenshot(sidebar);
           }
         },
         toast: (m, ms) => sidebar.toast(m, ms),

@@ -27,12 +27,25 @@
   "permissions": [
     "storage",
     "activeTab",
-    "scripting"
+    "scripting",
+    "tabs",
+    "downloads"
+  ],
+
+  "host_permissions": [
+    "<all_urls>"
   ],
 
   "web_accessible_resources": [
     {
-      "resources": ["src/gaze/frame.html"],
+      "resources": [
+        "src/gaze/*",
+        "src/vendor/*",
+        "src/vendor/mediapipe/*",
+        "src/vendor/mediapipe/face_mesh/*",
+        "src/vendor/mediapipe/gesture_recognizer/*",
+        "src/vendor/mediapipe/gesture_recognizer/wasm/*"
+      ],
       "matches": ["<all_urls>"]
     }
   ],

@@ -9,15 +9,11 @@
   "use strict";
   const NS = (window.Drishti = window.Drishti || {});
 
-  // 8 targets: Up/Down scroll + the six §4 actions. `action` is the id fired.
+  // 4 large essential targets: Up, Share, Audio, Down. Each takes 25% of sidebar height.
   const BUTTONS = [
     { id: "up", label: "Up", glyph: "▲", hint: "Scroll up" },
-    { id: "like", label: "Like", glyph: "♥", hint: "Like current item" },
-    { id: "comment", label: "Comment", glyph: "💬", hint: "Voice comment" },
     { id: "share", label: "Share", glyph: "↗", hint: "Share / copy link" },
     { id: "audio", label: "Audio", glyph: "🔊", hint: "Read aloud / talk" },
-    { id: "muc", label: "Reply", glyph: "★", hint: "Most-used comment" },
-    { id: "mul", label: "React", glyph: "👍", hint: "Most-used reaction" },
     { id: "down", label: "Down", glyph: "▼", hint: "Scroll down" },
   ];
 
@@ -177,8 +173,11 @@
         action: b.id,
         getRect: () => {
           const r = this.buttons.get(b.id).el.getBoundingClientRect();
+          // Expand horizontal hitbox to cover the right 35% of the screen (Fitts' Law)
+          // Safe reading area remains on the left 65% of the viewport
+          const triggerLeft = Math.min(r.left - 450, window.innerWidth * 0.65);
           return {
-            left: r.left - 250, // Expand hitbox horizontally to the left by 250px (Fitts' Law)
+            left: triggerLeft,
             right: r.right,
             top: r.top,
             bottom: r.bottom,
