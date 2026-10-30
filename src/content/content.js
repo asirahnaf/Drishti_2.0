@@ -21,6 +21,7 @@
     GET_SETTINGS: "drishti:get-settings",
     SET_SETTINGS: "drishti:set-settings",
     CAPTURE_SCREENSHOT: "drishti:capture-screenshot",
+    NAVIGATE: "drishti:navigate",
   };
 
   const HOST_ID = "drishti-host";
@@ -162,6 +163,12 @@
     return (zone) => {
       sidebar.flashFire(zone.id);
 
+      // Handle AAC Quick-Reply phrase buttons
+      if (zone.id.startsWith("aac-")) {
+        window.Drishti?.aacInstance?.triggerPhrase(zone.id, sidebar);
+        return;
+      }
+
       switch (zone.id) {
         case "up":
           window.scrollBy({ top: -0.8 * window.innerHeight, behavior: "smooth" });
@@ -179,6 +186,249 @@
           console.log(`[Drishti] FIRE '${zone.id}'`);
       }
     };
+  }
+
+  // Context-Aware On-Page Search Bar Discovery
+  function findSiteSearchInput() {
+    const selectors = [
+      'input[name="search_query"]', // YouTube
+      'input#search',               // YouTube
+      'input[name="search"]',       // Wikipedia
+      'input#searchInput',          // Wikipedia
+      'input#twotabsearchtextbox',  // Amazon
+      'input[type="search"]',
+      'textarea[name="q"]',         // Google modern
+      'input[name="q"]',            // Google, GitHub, Reddit
+      '[role="searchbox"]',
+      'form[role="search"] input:not([type="hidden"])',
+      'input[aria-label*="search" i]',
+      'input[placeholder*="search" i]',
+      'input[name*="search" i]:not([type="hidden"])',
+      'input[id*="search" i]:not([type="hidden"])',
+    ];
+
+    for (const sel of selectors) {
+      const matches = document.querySelectorAll(sel);
+      for (const el of matches) {
+        if (el.closest && el.closest("#drishti-host")) continue;
+        if (el.disabled || el.readOnly) continue;
+        const rect = el.getBoundingClientRect();
+        if (rect.width > 20 && rect.height > 10) {
+          const style = window.getComputedStyle(el);
+          if (style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0") {
+            return el;
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  // React & Web Framework Input Value Setter
+  function setInputValue(el, value) {
+    el.focus();
+    const proto =
+      el.tagName === "TEXTAREA"
+        ? window.HTMLTextAreaElement.prototype
+        : window.HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+    if (setter) {
+      setter.call(el, value);
+    } else {
+      el.value = value;
+    }
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  // Submit Search on Active Page
+  function submitSearch(input) {
+    // YouTube search submit button
+    const ytBtn = document.querySelector(
+      "#search-icon-legacy, ytd-searchbox button#search-icon-legacy"
+    );
+    if (ytBtn && ytBtn.offsetParent !== null) {
+      ytBtn.click();
+      return;
+    }
+
+    // Amazon search submit button
+    const amzBtn = document.querySelector("#nav-search-submit-button");
+    if (amzBtn && amzBtn.offsetParent !== null) {
+      amzBtn.click();
+      return;
+    }
+
+    // Inside same form submit button
+    const form = input.form || input.closest("form");
+    const submitBtn = form?.querySelector(
+      'button[type="submit"], input[type="submit"], button[aria-label*="search" i]'
+    );
+    if (submitBtn && submitBtn.offsetParent !== null) {
+      submitBtn.click();
+      return;
+    }
+
+    // Dispatch Enter key events
+    const enterOpts = {
+      key: "Enter",
+      code: "Enter",
+      keyCode: 13,
+      which: 13,
+      bubbles: true,
+      cancelable: true,
+    };
+    input.dispatchEvent(new KeyboardEvent("keydown", enterOpts));
+    input.dispatchEvent(new KeyboardEvent("keypress", enterOpts));
+    input.dispatchEvent(new KeyboardEvent("keyup", enterOpts));
+
+    // Fallback: form requestSubmit
+    if (form) {
+      try {
+        if (typeof form.requestSubmit === "function") {
+          form.requestSubmit();
+        } else {
+          form.submit();
+        }
+      } catch (e) {
+        /* best effort */
+      }
+    }
+  }
+
+  // Perform Contextual Site Search
+  function performSiteSearch(query, sidebar) {
+    const searchInput = findSiteSearchInput();
+    if (!searchInput) return false;
+
+    const host = location.hostname.replace(/^www\./, "").split(".")[0];
+    const siteName = host.charAt(0).toUpperCase() + host.slice(1);
+
+    sidebar.toast(`🔍 Searching ${siteName} for: "${query}"`, 3000);
+    setInputValue(searchInput, query);
+
+    setTimeout(() => {
+      submitSearch(searchInput);
+    }, 100);
+
+    return true;
+  }
+
+  // Multimodal Voice Action Handler
+  function handleVoiceCommand(cmd, sidebar) {
+    switch (cmd.action) {
+      case "navigate":
+        if (cmd.url) {
+          send(MSG.NAVIGATE, { url: cmd.url });
+        }
+        break;
+      case "search": {
+        const query = cmd.query;
+        if (!query) break;
+
+        let handledOnSite = false;
+        if (!cmd.forceWeb) {
+          handledOnSite = performSiteSearch(query, sidebar);
+        }
+
+        if (!handledOnSite) {
+          const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+          sidebar.toast(`🔍 Searching Google: "${query}"`, 2500);
+          send(MSG.NAVIGATE, { url: searchUrl });
+        }
+        break;
+      }
+      case "scroll-down": {
+        const delta = Math.round(0.8 * window.innerHeight);
+        if (document.scrollingElement) {
+          document.scrollingElement.scrollBy({ top: delta, behavior: "smooth" });
+        }
+        window.scrollBy({ top: delta, behavior: "smooth" });
+        break;
+      }
+      case "scroll-up": {
+        const delta = Math.round(-0.8 * window.innerHeight);
+        if (document.scrollingElement) {
+          document.scrollingElement.scrollBy({ top: delta, behavior: "smooth" });
+        }
+        window.scrollBy({ top: delta, behavior: "smooth" });
+        break;
+      }
+      case "scroll-top": {
+        if (document.scrollingElement) {
+          document.scrollingElement.scrollTo({ top: 0, behavior: "smooth" });
+        }
+        window.scrollTo({ top: 0, behavior: "smooth" });
+        break;
+      }
+      case "scroll-bottom": {
+        const bottom = Math.max(
+          document.body?.scrollHeight || 0,
+          document.documentElement?.scrollHeight || 0
+        );
+        if (document.scrollingElement) {
+          document.scrollingElement.scrollTo({ top: bottom, behavior: "smooth" });
+        }
+        window.scrollTo({ top: bottom, behavior: "smooth" });
+        break;
+      }
+      case "history-back":
+        window.history.back();
+        break;
+      case "history-forward":
+        window.history.forward();
+        break;
+      case "reload":
+        window.location.reload();
+        break;
+      case "read-aloud":
+        readAloud(sidebar);
+        break;
+      case "stop-audio":
+        if (window.speechSynthesis?.speaking) {
+          window.speechSynthesis.cancel();
+          sidebar.toast("🔇 Audio stopped");
+        }
+        break;
+      case "screenshot":
+        takeScreenshot(sidebar);
+        break;
+      case "share":
+        shareLink(sidebar);
+        break;
+      case "like":
+        likeCurrentItem(sidebar);
+        break;
+      case "show-links":
+        window.Drishti?.hintsInstance?.show();
+        break;
+      case "click-link":
+        window.Drishti?.hintsInstance?.click(cmd.number);
+        break;
+      case "hide-links":
+        window.Drishti?.hintsInstance?.hide();
+        break;
+      case "open-aac":
+        sidebar.setAacOpen(true);
+        break;
+      case "close-aac":
+        sidebar.setAacOpen(false);
+        break;
+      case "dictation-input":
+        window.Drishti?.dictationInstance?.insertDictatedText(cmd.text);
+        break;
+      case "dictation-confirm":
+        window.Drishti?.dictationInstance?.confirmAndSend();
+        break;
+      case "dictation-clear":
+        window.Drishti?.dictationInstance?.clearText();
+        break;
+      case "dictation-exit":
+        window.Drishti?.dictationInstance?.close();
+        break;
+      default:
+        console.log(`[Drishti] Voice action: ${cmd.action}`, cmd);
+    }
   }
 
   async function init() {
@@ -228,6 +478,7 @@
     window.addEventListener("mousemove", (e) => {
       lastMouseMoveTime = Date.now();
       dwell.update(e.clientX, e.clientY);
+      window.Drishti?.dictationInstance?.updatePointer(e.clientX, e.clientY);
     }, {
       passive: true,
     });
@@ -302,6 +553,7 @@
             sidebar.updateGazeCursor(cursorX, cursorY, true);
 
             dwell.update(smoothedX, smoothedY);
+            window.Drishti?.dictationInstance?.updatePointer(cursorX, cursorY);
           } else {
             smoothedX = null;
             smoothedY = null;
@@ -349,6 +601,143 @@
     } else {
       console.warn("[Drishti] GazeController missing — mouse only (check manifest)");
       window.__drishti = { host, settings, sidebar, dwell, MSG };
+    }
+
+    // Voice Engine (Multimodal Voice & Command Navigation)
+    const { VoiceEngine } = window.Drishti || {};
+    if (VoiceEngine) {
+      const voice = new VoiceEngine({
+        onCommand: (cmd) => handleVoiceCommand(cmd, sidebar),
+        onStatus: (st) => sidebar.setVoiceState(st.active),
+        toast: (m, ms) => sidebar.toast(m, ms),
+      });
+
+      // Auto-resume voice across page navigations & new tabs if enabled
+      if (settings.voiceEnabled) {
+        console.log("[Drishti] Auto-resuming Voice from saved settings");
+        voice.start().then((on) => {
+          sidebar.setVoiceState(on);
+        }).catch((err) => {
+          console.warn("[Drishti] Auto-resume voice failed:", err);
+        });
+      }
+
+      sidebar.onVoiceToggle(async () => {
+        const on = await voice.toggle();
+        sidebar.setVoiceState(on);
+        try {
+          await send(MSG.SET_SETTINGS, { patch: { voiceEnabled: on } });
+        } catch (e) {
+          /* best effort */
+        }
+      });
+
+      // Quick keyboard shortcut Alt+V to toggle voice
+      window.addEventListener("keydown", async (e) => {
+        if (e.altKey && (e.key === "v" || e.key === "V")) {
+          e.preventDefault();
+          const on = await voice.toggle();
+          sidebar.setVoiceState(on);
+          try {
+            await send(MSG.SET_SETTINGS, { patch: { voiceEnabled: on } });
+          } catch (e) {}
+        }
+      });
+
+      // Real-time multi-tab synchronization of voice state
+      if (ext.storage?.onChanged) {
+        ext.storage.onChanged.addListener((changes, area) => {
+          if (area === "local" && changes["drishti:settings"]) {
+            const next = changes["drishti:settings"].newValue;
+            if (next && typeof next.voiceEnabled === "boolean") {
+              if (next.voiceEnabled && !voice.active) {
+                voice.start().then((on) => sidebar.setVoiceState(on));
+              } else if (!next.voiceEnabled && voice.active) {
+                voice.stop();
+                sidebar.setVoiceState(false);
+              }
+            }
+          }
+        });
+      }
+
+      window.__drishti.voice = voice;
+    }
+
+    // Numbered Link Hints Engine (Vimium-Style Hands-Free Clicker)
+    const { HintsEngine } = window.Drishti || {};
+    if (HintsEngine) {
+      const hints = new HintsEngine({
+        toast: (m, ms) => sidebar.toast(m, ms),
+      });
+      window.Drishti.hintsInstance = hints;
+      window.__drishti.hints = hints;
+
+      // Quick keyboard shortcut Alt+L to toggle link hints
+      window.addEventListener("keydown", (e) => {
+        if (e.altKey && (e.key === "l" || e.key === "L")) {
+          e.preventDefault();
+          hints.toggle();
+        }
+      });
+    }
+
+    // AAC Quick-Reply Speech Engine
+    const { AacEngine } = window.Drishti || {};
+    if (AacEngine) {
+      const aac = new AacEngine({
+        toast: (m, ms) => sidebar.toast(m, ms),
+      });
+      window.Drishti.aacInstance = aac;
+      window.__drishti.aac = aac;
+
+      // Sync dwell zones whenever AAC drawer opens or closes
+      sidebar.onAacToggle((isOpen) => {
+        dwell.setZones(sidebar.getZones());
+        if (isOpen) {
+          sidebar.toast("🗣️ Quick Talk Menu: Gaze at any phrase to speak aloud", 3000);
+        }
+      });
+
+      // Quick keyboard shortcut Alt+A to toggle AAC mode
+      window.addEventListener("keydown", (e) => {
+        if (e.altKey && (e.key === "a" || e.key === "A")) {
+          e.preventDefault();
+          sidebar.toggleAac();
+        }
+      });
+    }
+
+    // Social Media Voice Dictation & Gaze Confirmation Guardrail
+    const { DictationEngine } = window.Drishti || {};
+    if (DictationEngine) {
+      const dictation = new DictationEngine({
+        sidebar,
+        voiceEngine: window.__drishti?.voice,
+        toast: (m, ms) => sidebar.toast(m, ms),
+      });
+      window.Drishti.dictationInstance = dictation;
+      window.__drishti.dictation = dictation;
+
+      // Quick keyboard shortcut Alt+D to toggle dictation on active input
+      window.addEventListener("keydown", (e) => {
+        if (e.altKey && (e.key === "d" || e.key === "D")) {
+          e.preventDefault();
+          const target = document.activeElement;
+          if (dictation._isEditable(target)) {
+            dictation.activate(target);
+          } else {
+            // Find first visible input/textarea on page
+            const candidate = document.querySelector('textarea, input[type="text"], input:not([type]), [contenteditable="true"]');
+            if (candidate) {
+              candidate.focus();
+              dictation.activate(candidate);
+            } else {
+              sidebar.toast("No editable field found on page.");
+            }
+          }
+        }
+      });
     }
   }
 

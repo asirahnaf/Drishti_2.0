@@ -16,6 +16,7 @@ const MSG = {
   GET_SETTINGS: "drishti:get-settings",
   SET_SETTINGS: "drishti:set-settings",
   CAPTURE_SCREENSHOT: "drishti:capture-screenshot",
+  NAVIGATE: "drishti:navigate",
 };
 
 // Defaults locked from the plan (§10 open questions): dwell 750ms, cooldown 400ms.
@@ -24,6 +25,7 @@ const DEFAULT_SETTINGS = {
   cooldownMs: 400,
   sidebarEnabled: true,
   gazeEnabled: false, // mouse-driven until Step 3 wires WebGazer
+  voiceEnabled: false,
 };
 
 const SETTINGS_KEY = "drishti:settings";
@@ -83,6 +85,32 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
       });
       return true;
+    }
+
+    case MSG.NAVIGATE: {
+      const url = message.url;
+      if (!url) {
+        sendResponse({ ok: false, error: "missing url" });
+        return false;
+      }
+      const targetTabId = tabId || sender.tab?.id;
+      if (targetTabId) {
+        ext.tabs.update(targetTabId, { url }, (tab) => {
+          sendResponse({ ok: true, tabId: tab?.id });
+        });
+        return true;
+      } else {
+        ext.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+          if (tabs[0]?.id) {
+            ext.tabs.update(tabs[0].id, { url }, (tab) => {
+              sendResponse({ ok: true, tabId: tab?.id });
+            });
+          } else {
+            sendResponse({ ok: false, error: "no active tab found" });
+          }
+        });
+        return true;
+      }
     }
 
     default:

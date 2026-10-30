@@ -16,8 +16,12 @@
       "js": [
         "src/content/platform.js",
         "src/content/dwell.js",
+        "src/content/aac.js",
         "src/content/sidebar.js",
         "src/content/gaze.js",
+        "src/content/voice.js",
+        "src/content/hints.js",
+        "src/content/dictation.js",
         "src/content/content.js"
       ],
       "run_at": "document_idle"
