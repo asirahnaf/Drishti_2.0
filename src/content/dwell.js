@@ -77,12 +77,24 @@
     }
 
     _zoneAt(x, y) {
+      let bestZone = null;
+      let minDistanceY = Infinity;
+
       for (const z of this.zones) {
         const r = z.getRect();
         if (!r) continue;
-        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return z;
+        // Must be within expanded horizontal trigger band
+        if (x >= r.left && x <= (r.right + 30)) {
+          const centerY = (r.top + r.bottom) / 2;
+          const distY = Math.abs(y - centerY);
+          // Unambiguously choose the button whose vertical center is closest to gaze Y
+          if (distY < minDistanceY) {
+            minDistanceY = distY;
+            bestZone = z;
+          }
+        }
       }
-      return null;
+      return bestZone;
     }
 
     _tick(now) {

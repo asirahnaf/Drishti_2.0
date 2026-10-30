@@ -9,15 +9,11 @@
   "use strict";
   const NS = (window.Drishti = window.Drishti || {});
 
-  // 8 targets: Up/Down scroll + the six §4 actions. `action` is the id fired.
+  // 4 large essential targets: Up, Share, Audio, Down. Each takes 25% of sidebar height.
   const BUTTONS = [
     { id: "up", label: "Up", glyph: "▲", hint: "Scroll up" },
-    { id: "like", label: "Like", glyph: "♥", hint: "Like current item" },
-    { id: "comment", label: "Comment", glyph: "💬", hint: "Voice comment" },
     { id: "share", label: "Share", glyph: "↗", hint: "Share / copy link" },
     { id: "audio", label: "Audio", glyph: "🔊", hint: "Read aloud / talk" },
-    { id: "muc", label: "Reply", glyph: "★", hint: "Most-used comment" },
-    { id: "mul", label: "React", glyph: "👍", hint: "Most-used reaction" },
     { id: "down", label: "Down", glyph: "▼", hint: "Scroll down" },
   ];
 
@@ -85,16 +81,54 @@
       pointer-events: none;
     }
     .toast.show { opacity: 1; transform: translateY(0); }
-    .gaze-toggle {
-      flex: 0 0 auto; height: 34px;
-      display: flex; align-items: center; justify-content: center; gap: 6px;
-      border: 2px solid rgba(255,255,255,0.18); border-radius: 10px;
+    .header-row {
+      display: flex; gap: 4px; flex: 0 0 auto; width: 100%;
+    }
+    .gaze-toggle, .voice-toggle {
+      flex: 1 1 0; height: 28px;
+      display: flex; align-items: center; justify-content: center; gap: 4px;
+      border: 2px solid rgba(255,255,255,0.18); border-radius: 9px;
       background: rgba(255,255,255,0.06); color: #f2f5f8;
-      font: 600 12px system-ui, sans-serif; cursor: pointer;
+      font: 600 10.5px system-ui, sans-serif; cursor: pointer;
+      transition: background 120ms, border-color 120ms;
+      padding: 0 2px;
     }
     .gaze-toggle.on { border-color: #2ecc71; background: rgba(46,204,113,0.18); }
-    .gaze-toggle .dot { width: 8px; height: 8px; border-radius: 50%; background: #888; }
+    .gaze-toggle .dot { width: 7px; height: 7px; border-radius: 50%; background: #888; }
     .gaze-toggle.on .dot { background: #2ecc71; }
+    .voice-toggle.on { border-color: #38bdf8; background: rgba(56,189,248,0.20); }
+    .voice-toggle .dot { width: 7px; height: 7px; border-radius: 50%; background: #888; }
+    .voice-toggle.on .dot { background: #38bdf8; animation: pulse 1.2s infinite; }
+    @keyframes pulse {
+      0% { transform: scale(0.9); opacity: 0.7; }
+      50% { transform: scale(1.2); opacity: 1; }
+      100% { transform: scale(0.9); opacity: 0.7; }
+    }
+    .aac-toggle {
+      flex: 0 0 auto; height: 28px; width: 100%;
+      display: flex; align-items: center; justify-content: center; gap: 5px;
+      border: 2px solid rgba(255,255,255,0.18); border-radius: 9px;
+      background: rgba(255,255,255,0.06); color: #f2f5f8;
+      font: 600 11px system-ui, sans-serif; cursor: pointer;
+      transition: background 120ms, border-color 120ms, box-shadow 120ms;
+    }
+    .aac-toggle.on {
+      border-color: #c084fc;
+      background: rgba(192, 132, 252, 0.22);
+      box-shadow: 0 0 10px rgba(192, 132, 252, 0.35);
+    }
+    .group-wrap {
+      flex: 1 1 0; display: flex; flex-direction: column; gap: 5px; width: 100%; min-height: 0;
+    }
+    .btn.alert {
+      border-color: rgba(239, 68, 68, 0.7);
+      background: rgba(239, 68, 68, 0.16);
+      color: #fca5a5;
+    }
+    .btn.alert:hover, .btn.alert.hovering {
+      border-color: #ef4444;
+      background: rgba(239, 68, 68, 0.35);
+    }
     .gaze-cursor {
       position: fixed;
       width: 18px; height: 18px;
@@ -114,7 +148,28 @@
       this.root = host.attachShadow ? host.attachShadow({ mode: "open" }) : null;
       if (!this.root) throw new Error("[Drishti] host cannot host a shadow root");
       this.buttons = new Map(); // id -> { el, ringFill }
+      this.isAacOpen = false;
       this._render();
+    }
+
+    _createButtonEl(b) {
+      const el = document.createElement("div");
+      el.className = "btn";
+      el.dataset.id = b.id;
+      el.setAttribute("role", "button");
+      el.setAttribute("aria-label", `${b.label} — ${b.hint}`);
+      el.title = b.hint;
+
+      // Confirm ring (SVG), fills as dwell progresses.
+      el.innerHTML = `
+        <svg class="ring" viewBox="0 0 100 100" aria-hidden="true">
+          <circle class="ring-track" cx="50" cy="50" r="${RING_R}"></circle>
+          <circle class="ring-fill" cx="50" cy="50" r="${RING_R}"></circle>
+        </svg>
+        <span class="glyph" aria-hidden="true">${b.glyph}</span>
+        <span class="label">${b.label}</span>
+      `;
+      return el;
     }
 
     _render() {
@@ -124,8 +179,10 @@
       const wrap = document.createElement("div");
       wrap.className = "wrap";
 
-      // Gaze on/off toggle at the top. Mouse-clickable (it's a real control, not a
-      // dwell zone) so the user can enable gaze before calibration exists.
+      // 1. Header row with Gaze and Voice side-by-side
+      const headerRow = document.createElement("div");
+      headerRow.className = "header-row";
+
       const gazeBtn = document.createElement("button");
       gazeBtn.className = "gaze-toggle";
       gazeBtn.type = "button";
@@ -133,29 +190,52 @@
       gazeBtn.innerHTML = `<span class="dot"></span><span class="gaze-label">Gaze off</span>`;
       gazeBtn.addEventListener("click", () => this._onGazeToggle?.());
       this.gazeBtn = gazeBtn;
-      wrap.appendChild(gazeBtn);
+      headerRow.appendChild(gazeBtn);
 
+      const voiceBtn = document.createElement("button");
+      voiceBtn.className = "voice-toggle";
+      voiceBtn.type = "button";
+      voiceBtn.setAttribute("aria-label", "Toggle voice command control");
+      voiceBtn.innerHTML = `<span class="dot"></span><span class="voice-label">Voice off</span>`;
+      voiceBtn.addEventListener("click", () => this._onVoiceToggle?.());
+      this.voiceBtn = voiceBtn;
+      headerRow.appendChild(voiceBtn);
+      wrap.appendChild(headerRow);
+
+      // 2. AAC Quick Talk toggle button
+      const aacBtn = document.createElement("button");
+      aacBtn.className = "aac-toggle";
+      aacBtn.type = "button";
+      aacBtn.setAttribute("aria-label", "Toggle AAC quick speech phrase menu");
+      aacBtn.innerHTML = `<span class="aac-label">🗣️ Quick Talk</span>`;
+      aacBtn.addEventListener("click", () => this.toggleAac());
+      this.aacBtn = aacBtn;
+      wrap.appendChild(aacBtn);
+
+      // 3. Navigation Buttons Group (Default)
+      const navGroup = document.createElement("div");
+      navGroup.className = "group-wrap nav-group";
       for (const b of BUTTONS) {
-        const el = document.createElement("div");
-        el.className = "btn";
-        el.dataset.id = b.id;
-        el.setAttribute("role", "button");
-        el.setAttribute("aria-label", `${b.label} — ${b.hint}`);
-        el.title = b.hint;
-
-        // Confirm ring (SVG), fills as dwell progresses.
-        el.innerHTML = `
-          <svg class="ring" viewBox="0 0 100 100" aria-hidden="true">
-            <circle class="ring-track" cx="50" cy="50" r="${RING_R}"></circle>
-            <circle class="ring-fill" cx="50" cy="50" r="${RING_R}"></circle>
-          </svg>
-          <span class="glyph" aria-hidden="true">${b.glyph}</span>
-          <span class="label">${b.label}</span>
-        `;
-
-        wrap.appendChild(el);
+        const el = this._createButtonEl(b);
+        navGroup.appendChild(el);
         this.buttons.set(b.id, { el, ringFill: el.querySelector(".ring-fill") });
       }
+      wrap.appendChild(navGroup);
+      this.navGroup = navGroup;
+
+      // 4. AAC Phrase Tiles Group (Collapsible Drawer)
+      const aacPhrases = window.Drishti?.AAC_PHRASES || [];
+      const aacGroup = document.createElement("div");
+      aacGroup.className = "group-wrap aac-group";
+      aacGroup.style.display = "none";
+      for (const p of aacPhrases) {
+        const el = this._createButtonEl(p);
+        if (p.alert) el.classList.add("alert");
+        aacGroup.appendChild(el);
+        this.buttons.set(p.id, { el, ringFill: el.querySelector(".ring-fill") });
+      }
+      wrap.appendChild(aacGroup);
+      this.aacGroup = aacGroup;
 
       this.root.append(style, wrap);
 
@@ -172,13 +252,22 @@
 
     /** Zones for the dwell engine: id + a live getRect() (recomputed each hit-test). */
     getZones() {
-      return BUTTONS.map((b) => ({
+      const activeList = this.isAacOpen
+        ? (window.Drishti?.AAC_PHRASES || [])
+        : BUTTONS;
+
+      return activeList.map((b) => ({
         id: b.id,
         action: b.id,
         getRect: () => {
-          const r = this.buttons.get(b.id).el.getBoundingClientRect();
+          const btnObj = this.buttons.get(b.id);
+          if (!btnObj?.el) return null;
+          const r = btnObj.el.getBoundingClientRect();
+          // Expand horizontal hitbox to cover the right 35% of the screen (Fitts' Law)
+          // Safe reading area remains on the left 65% of the viewport
+          const triggerLeft = Math.min(r.left - 450, window.innerWidth * 0.65);
           return {
-            left: r.left - 250, // Expand hitbox horizontally to the left by 250px (Fitts' Law)
+            left: triggerLeft,
             right: r.right,
             top: r.top,
             bottom: r.bottom,
@@ -228,6 +317,43 @@
       this.gazeBtn.classList.toggle("on", !!on);
       const label = this.gazeBtn.querySelector(".gaze-label");
       if (label) label.textContent = on ? "Gaze on" : "Gaze off";
+    }
+
+    /** Register the voice toggle handler (called from content.js). */
+    onVoiceToggle(fn) {
+      this._onVoiceToggle = fn;
+    }
+
+    /** Reflect voice on/off in the toggle button. */
+    setVoiceState(on) {
+      if (!this.voiceBtn) return;
+      this.voiceBtn.classList.toggle("on", !!on);
+      const label = this.voiceBtn.querySelector(".voice-label");
+      if (label) label.textContent = on ? "Voice on" : "Voice off";
+    }
+
+    /** Register the AAC phrase toggle handler (called from content.js). */
+    onAacToggle(fn) {
+      this._onAacToggle = fn;
+    }
+
+    /** Open or close AAC phrase drawer. */
+    setAacOpen(open) {
+      this.isAacOpen = !!open;
+      if (this.navGroup) this.navGroup.style.display = this.isAacOpen ? "none" : "flex";
+      if (this.aacGroup) this.aacGroup.style.display = this.isAacOpen ? "flex" : "none";
+      if (this.aacBtn) {
+        this.aacBtn.classList.toggle("on", this.isAacOpen);
+        const label = this.aacBtn.querySelector(".aac-label");
+        if (label) label.textContent = this.isAacOpen ? "🗣️ Talk on" : "🗣️ Quick Talk";
+      }
+      this._onAacToggle?.(this.isAacOpen);
+    }
+
+    /** Toggle AAC phrase drawer. */
+    toggleAac() {
+      this.setAacOpen(!this.isAacOpen);
+      return this.isAacOpen;
     }
 
     /** Show a short message near the sidebar; auto-hides. */

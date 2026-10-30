@@ -16,8 +16,12 @@
       "js": [
         "src/content/platform.js",
         "src/content/dwell.js",
+        "src/content/aac.js",
         "src/content/sidebar.js",
         "src/content/gaze.js",
+        "src/content/voice.js",
+        "src/content/hints.js",
+        "src/content/dictation.js",
         "src/content/content.js"
       ],
       "run_at": "document_idle"
@@ -27,12 +31,25 @@
   "permissions": [
     "storage",
     "activeTab",
-    "scripting"
+    "scripting",
+    "tabs",
+    "downloads"
+  ],
+
+  "host_permissions": [
+    "<all_urls>"
   ],
 
   "web_accessible_resources": [
     {
-      "resources": ["src/gaze/frame.html"],
+      "resources": [
+        "src/gaze/*",
+        "src/vendor/*",
+        "src/vendor/mediapipe/*",
+        "src/vendor/mediapipe/face_mesh/*",
+        "src/vendor/mediapipe/gesture_recognizer/*",
+        "src/vendor/mediapipe/gesture_recognizer/wasm/*"
+      ],
       "matches": ["<all_urls>"]
     }
   ],

@@ -74,11 +74,11 @@
     }
 
     try {
-      // Request high resolution camera feed (720p/1080p) to capture sharper facial/eye features
+      // Standard webcam resolution (640x480) gives rock-solid 30-60 fps with low latency
       wg.params.camConstraints = {
         video: {
-          width: { min: 640, ideal: 1280, max: 1920 },
-          height: { min: 480, ideal: 720, max: 1080 },
+          width: { min: 320, ideal: 640, max: 1280 },
+          height: { min: 240, ideal: 480, max: 720 },
           facingMode: "user"
         }
       };
@@ -87,24 +87,32 @@
       // WebGazer's locateFile does: solutionPath.replace(/\/+$/,'') + '/' + filename,
       // so this yields chrome-extension://<id>/src/vendor/mediapipe/face_mesh/<file>.
       wg.params.faceMeshSolutionPath = ext.runtime.getURL("src/vendor/mediapipe/face_mesh");
-      // Persist regression data across sessions so calibration isn't lost on reload.
-      wg.saveDataAcrossSessions(true);
+      // Do NOT persist regression data across sessions so each session starts with fresh calibration.
+      wg.saveDataAcrossSessions(false);
+      wg.params.dataWindowSize = 300;
 
-      // Disable Kalman filter to avoid double-filtering lag (we use our own fast EMA filter)
+      // Enable Kalman filter to stabilize eye pupil micro-jitter at the regression source
       try {
         if (typeof wg.applyKalmanFilter === "function") {
-          wg.applyKalmanFilter(false);
+          wg.applyKalmanFilter(true);
         }
       } catch (e) {
-        console.warn("[Drishti/frame] failed to disable Kalman filter:", e);
+        console.warn("[Drishti/frame] failed to enable Kalman filter:", e);
       }
 
-      // We draw our own UI. Keep WebGazer's overlays off; optional tiny video pip
-      // only if the parent asked for it (helps the user center their face).
+      // Ensure iframe document never listens to mouse clicks or moves
+      try {
+        if (typeof wg.removeMouseEventListeners === "function") {
+          wg.removeMouseEventListeners();
+        }
+      } catch (_) {}
+
+      // We draw our own UI. Keep WebGazer's overlays off; video feed active
+      // while visually hidden by the frame.html container styles (opacity 0 unless preview).
       wg.showPredictionPoints(false);
       wg.showFaceOverlay(false);
       wg.showFaceFeedbackBox(false);
-      wg.showVideoPreview(!!opts.preview);
+      wg.showVideoPreview(true);
       document.documentElement.classList.toggle("show", !!opts.preview);
 
       wg.setGazeListener((data) => {
@@ -112,7 +120,11 @@
         // WebGazer returns viewport-space pixels (this frame == full viewport).
         const x = data.x;
         const y = data.y;
-        if (Number.isFinite(x) && Number.isFinite(y)) post({ evt: "gaze", x, y });
+        if (Number.isFinite(x) && Number.isFinite(y)) {
+          const clampedX = Math.max(-100, Math.min(window.innerWidth + 100, x));
+          const clampedY = Math.max(-100, Math.min(window.innerHeight + 100, y));
+          post({ evt: "gaze", x: clampedX, y: clampedY });
+        }
       });
 
       // Start WebGazer. On first run this loads the FaceMesh model, so it can take
@@ -132,6 +144,14 @@
 
       running = true;
       post({ evt: "ready" });
+
+      // Pre-load gesture recognizer model in background so it's ready when calibration ends.
+      // (Do NOT start gesture loop yet; it will be started upon calibration completion)
+      initGestureRecognizer().then((gr) => {
+        if (gr) {
+          console.info("[Drishti/frame] Gesture recognizer pre-loaded and standing by.");
+        }
+      });
     } catch (err) {
       running = false;
       const name = (err && err.name) || "";
@@ -146,11 +166,151 @@
     }
   }
 
+  let gestureRecognizer = null;
+  let gestureInterval = null;
+
+  async function initGestureRecognizer() {
+    if (gestureRecognizer) return gestureRecognizer;
+    if (typeof Vision === "undefined" || !Vision.FilesetResolver || !Vision.GestureRecognizer) {
+      console.warn("[Drishti/frame] Vision library not loaded in frame");
+      post({ evt: "toast", msg: "Vision library not loaded in frame", ms: 4000 });
+      return null;
+    }
+
+    try {
+      const wasmPath = ext.runtime.getURL("src/vendor/mediapipe/gesture_recognizer/wasm");
+      const modelPath = ext.runtime.getURL("src/vendor/mediapipe/gesture_recognizer/gesture_recognizer.task");
+
+      console.info("[Drishti/frame] Pre-fetching gesture model buffer...", modelPath);
+      post({ evt: "toast", msg: "Loading Hand Gestures...", ms: 3000 });
+
+      // Pre-fetch model bytes as Uint8Array buffer to avoid internal fetch issues
+      const modelResp = await fetch(modelPath);
+      if (!modelResp.ok) throw new Error(`Model fetch failed: ${modelResp.status}`);
+      const modelBuffer = new Uint8Array(await modelResp.arrayBuffer());
+
+      console.info("[Drishti/frame] Resolving WASM fileset...", wasmPath);
+      const vision = await Vision.FilesetResolver.forVisionTasks(wasmPath);
+
+      // Clear global Module to isolate Tasks Vision from WebGazer's FaceMesh Module
+      const savedModule = window.Module;
+      window.Module = undefined;
+      if (typeof self !== "undefined") self.Module = undefined;
+
+      try {
+        gestureRecognizer = await Vision.GestureRecognizer.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetBuffer: modelBuffer,
+          },
+          runningMode: "VIDEO",
+          numHands: 1,
+        });
+      } finally {
+        if (savedModule) window.Module = savedModule;
+      }
+
+      console.info("[Drishti/frame] GestureRecognizer initialized successfully!");
+      post({ evt: "toast", msg: "✋ Gestures Ready: Thumbs Up 👍 & Palm ✋", ms: 4000 });
+      return gestureRecognizer;
+    } catch (err) {
+      console.error("[Drishti/frame] GestureRecognizer initialization failed:", err);
+      post({ evt: "toast", msg: "Gesture setup error: " + (err?.message || err), ms: 6000 });
+      return null;
+    }
+  }
+
+  let gestureRunning = false;
+  let lastGestureTime = 0;
+
+  function startGestureLoop() {
+    if (gestureInterval) clearInterval(gestureInterval);
+    lastGestureTime = 0;
+
+    // Run every 250ms (4 fps). Lightweight, responsive, and leaves full CPU for WebGazer.
+    gestureInterval = setInterval(() => {
+      if (!running || !gestureRecognizer || gestureRunning) return;
+
+      const video = document.getElementById("webgazerVideoFeed");
+      if (!video || video.readyState < 2 || video.videoWidth === 0) return;
+
+      gestureRunning = true;
+      try {
+        const nowMs = performance.now();
+        const results = gestureRecognizer.recognizeForVideo(video, nowMs);
+
+        if (results && results.gestures && results.gestures.length > 0) {
+          const topGesture = results.gestures[0][0];
+          const landmarks = results.landmarks && results.landmarks.length > 0 ? results.landmarks[0] : null;
+
+          if (topGesture && topGesture.categoryName !== "None") {
+            const name = topGesture.categoryName;
+            const score = topGesture.score;
+
+            // Hand Elevation Check:
+            // Landmark 0 is the wrist. If wrist Y > 0.82, the hand is resting at the bottom
+            // of the camera frame (e.g. typing on the laptop keyboard or resting on desk).
+            // Requiring wrist Y <= 0.82 ensures the user has intentionally raised their hand.
+            const wristY = landmarks && landmarks[0] ? landmarks[0].y : 0.5;
+            const isHandRaised = wristY <= 0.82;
+
+            if (isHandRaised && score >= 0.50) {
+              if (name === "Thumb_Up" || name === "Open_Palm") {
+                const now = Date.now();
+                // 2.5 second cooldown between successful activations
+                if (now - lastGestureTime > 2500) {
+                  lastGestureTime = now;
+                  console.info(`[Drishti/frame] Gesture fired: ${name} (${(score * 100).toFixed(0)}%, wristY: ${wristY.toFixed(2)})`);
+                  post({ evt: "gesture", gesture: name, score });
+                }
+              }
+            }
+          }
+        }
+      } catch (err) {
+        // Ignore single frame slips
+      } finally {
+        gestureRunning = false;
+      }
+    }, 250);
+  }
+
+  function stopGestureLoop() {
+    if (gestureInterval) {
+      clearInterval(gestureInterval);
+      gestureInterval = null;
+    }
+    gestureRunning = false;
+  }
+
+  async function onCalibStart() {
+    console.info("[Drishti/frame] Calibration started: stopping gesture loop & clearing old regression data");
+    stopGestureLoop();
+    if (wg && typeof wg.clearData === "function") {
+      try {
+        await wg.clearData();
+      } catch (err) {
+        console.warn("[Drishti/frame] Error clearing regression data:", err);
+      }
+    }
+  }
+
+  function onCalibEnd() {
+    console.info("[Drishti/frame] Calibration ended: starting gesture loop");
+    if (gestureRecognizer && running) {
+      startGestureLoop();
+    }
+  }
+
   function calibrate(x, y) {
     if (!wg || !running) return;
     // Correlate current eye features with the on-page point the user is looking at.
-    // The content script sends viewport-pixel coords of the dot it clicked.
-    try { wg.recordScreenPosition(x, y, "click"); } catch (_) {}
+    // The content script sends viewport-pixel coords of the active calibration dot.
+    try {
+      wg.recordScreenPosition(x, y, "click");
+      const reg = wg.getRegression()?.[0];
+      const count = reg?.getData()?.length || 0;
+      post({ evt: "calibSample", count });
+    } catch (_) {}
   }
 
   function preview(on) {
@@ -162,6 +322,7 @@
   }
 
   function stop() {
+    stopGestureLoop();
     if (!wg) return;
     try {
       wg.clearGazeListener();
@@ -181,10 +342,14 @@
     const d = e.data;
     if (!d || d.ns !== NS || !d.cmd) return;
     switch (d.cmd) {
-      case "start":     start(d.opts || {}); break;
-      case "calibrate": calibrate(d.x, d.y); break;
-      case "preview":   preview(d.on); break;
-      case "stop":      stop(); break;
+      case "start":         start(d.opts || {}); break;
+      case "calibStart":    onCalibStart(); break;
+      case "calibrate":     calibrate(d.x, d.y); break;
+      case "calibEnd":      onCalibEnd(); break;
+      case "startGestures": startGestureLoop(); break;
+      case "stopGestures":  stopGestureLoop(); break;
+      case "preview":       preview(d.on); break;
+      case "stop":          stop(); break;
     }
   });
 

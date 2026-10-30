@@ -9,18 +9,31 @@
        sizes the iframe to the full viewport so WebGazer's coordinate clamping
        (max of clientWidth/innerWidth) matches the visible viewport exactly. */
     html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: transparent; overflow: hidden; }
-    /* WebGazer injects a #webgazerVideoContainer; keep it hidden by default.
-       gaze.js can ask for a preview, which flips .show on <html>. */
-    #webgazerVideoContainer { display: none !important; }
-    html.show #webgazerVideoContainer { display: block !important; }
+    /* WebGazer injects #webgazerVideoContainer. Keep it rendering (for gesture recognition)
+       while completely invisible (opacity 0) unless preview is requested. */
+    #webgazerVideoContainer {
+      position: fixed !important;
+      top: 0 !important;
+      left: 0 !important;
+      width: 320px !important;
+      height: 240px !important;
+      opacity: 0 !important;
+      pointer-events: none !important;
+      z-index: -100 !important;
+    }
+    html.show #webgazerVideoContainer {
+      opacity: 1 !important;
+      pointer-events: auto !important;
+      z-index: 2147483647 !important;
+    }
   </style>
 </head>
 <body>
-  <!-- Load order matches the old content-script order, minus the page/CSP problems:
-       here we are at chrome-extension:// origin, so WebGazer's relative FaceMesh
-       path resolves to our bundled assets and OUR CSP (extension_pages) applies. -->
+  <!-- Load order: preload shims, webgazer, vision wasm loader & bundle, then frame.js -->
   <script src="preload.js"></script>
   <script src="../vendor/webgazer.js"></script>
+  <script src="../vendor/mediapipe/gesture_recognizer/wasm/vision_wasm_internal.js"></script>
+  <script src="../vendor/mediapipe/gesture_recognizer/vision_bundle.js"></script>
   <script src="frame.js"></script>
 </body>
 </html>
