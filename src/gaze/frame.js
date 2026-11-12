@@ -74,11 +74,11 @@
     }
 
     try {
-      // Standard webcam resolution (640x480) gives rock-solid 30-60 fps with low latency
+      // 720p HD resolution gives 4x pixel density over pupils/irises for sharp sub-pixel tracking
       wg.params.camConstraints = {
         video: {
-          width: { min: 320, ideal: 640, max: 1280 },
-          height: { min: 240, ideal: 480, max: 720 },
+          width: { min: 640, ideal: 1280, max: 1920 },
+          height: { min: 480, ideal: 720, max: 1080 },
           facingMode: "user"
         }
       };
@@ -90,6 +90,7 @@
       // Do NOT persist regression data across sessions so each session starts with fresh calibration.
       wg.saveDataAcrossSessions(false);
       wg.params.dataWindowSize = 300;
+      wg.params.refineLandmarks = true;
 
       // Enable Kalman filter to stabilize eye pupil micro-jitter at the regression source
       try {
@@ -116,7 +117,19 @@
       document.documentElement.classList.toggle("show", !!opts.preview);
 
       wg.setGazeListener((data) => {
-        if (!data || !running) return;
+        if (!running) return;
+
+        // When calibrating: stream live gaze coordinates for calibration cursor
+        if (isCalibrating) {
+          if (data && Number.isFinite(data.x) && Number.isFinite(data.y)) {
+            const clampedX = Math.max(0, Math.min(window.innerWidth, data.x));
+            const clampedY = Math.max(0, Math.min(window.innerHeight, data.y));
+            post({ evt: "calibGaze", x: clampedX, y: clampedY });
+          }
+          return;
+        }
+
+        if (!data) return;
         // WebGazer returns viewport-space pixels (this frame == full viewport).
         const x = data.x;
         const y = data.y;
@@ -282,8 +295,102 @@
     gestureRunning = false;
   }
 
+  let isCalibrating = false;
+  let prevHead = null;
+  let prevIris = null;
+
+  function evaluateCalibrationFixation() {
+    if (!wg || !running) return;
+    const tracker = wg.getTracker();
+    if (!tracker) return;
+    const positions = tracker.getPositions();
+
+    if (!positions || positions.length < 468) {
+      post({ evt: "calibFixation", stable: false, reason: "No face detected" });
+      prevHead = null;
+      prevIris = null;
+      return;
+    }
+
+    // 1. Blink / Eye Openness detection via EAR (Eye Aspect Ratio)
+    // Left eye: upper lid 159, lower lid 145, outer 33, inner 133
+    const p159 = positions[159], p145 = positions[145], p33 = positions[33], p133 = positions[133];
+    const leftH = Math.hypot(p159[0] - p145[0], p159[1] - p145[1]);
+    const leftW = Math.hypot(p33[0] - p133[0], p33[1] - p133[1]) || 1;
+    const earLeft = leftH / leftW;
+
+    // Right eye: upper lid 386, lower lid 374, outer 263, inner 362
+    const p386 = positions[386], p374 = positions[374], p263 = positions[263], p362 = positions[362];
+    const rightH = Math.hypot(p386[0] - p374[0], p386[1] - p374[1]);
+    const rightW = Math.hypot(p263[0] - p362[0], p263[1] - p362[1]) || 1;
+    const earRight = rightH / rightW;
+
+    const ear = (earLeft + earRight) / 2;
+    if (ear < 0.125) {
+      post({ evt: "calibFixation", stable: false, reason: "Blinking" });
+      return;
+    }
+
+    // 2. Head Movement detection (Nose bridge landmark 168 or nose tip landmark 1)
+    const head = positions[168] || positions[1];
+    let headDelta = 0;
+    if (prevHead) {
+      headDelta = Math.hypot(head[0] - prevHead[0], head[1] - prevHead[1]);
+    }
+    prevHead = [head[0], head[1]];
+
+    if (headDelta > 4.5) {
+      post({ evt: "calibFixation", stable: false, reason: "Head moving" });
+      return;
+    }
+
+    // 3. Iris / Eye Fixation Stability
+    let irisDelta = 0;
+    if (positions.length > 468) {
+      // MediaPipe attention mesh with iris landmarks:
+      // Left iris center: 468, Right iris center: 473
+      const p468 = positions[468], p473 = positions[473];
+      const normIrisLX = (p468[0] - p33[0]) / leftW;
+      const normIrisLY = (p468[1] - p159[1]) / (leftH || 1);
+      const normIrisRX = (p473[0] - p362[0]) / rightW;
+      const normIrisRY = (p473[1] - p386[1]) / (rightH || 1);
+      const curIris = [(normIrisLX + normIrisRX) / 2, (normIrisLY + normIrisRY) / 2];
+
+      if (prevIris) {
+        irisDelta = Math.hypot(curIris[0] - prevIris[0], curIris[1] - prevIris[1]);
+      }
+      prevIris = curIris;
+
+      if (irisDelta > 0.045) {
+        post({ evt: "calibFixation", stable: false, reason: "Eyes moving" });
+        return;
+      }
+    } else {
+      // 468-point mesh fallback: eye centers relative to nose bridge
+      const eyeMidX = (p33[0] + p133[0] + p263[0] + p362[0]) / 4;
+      const eyeMidY = (p159[1] + p145[1] + p386[1] + p374[1]) / 4;
+      const relX = eyeMidX - head[0];
+      const relY = eyeMidY - head[1];
+
+      if (prevIris) {
+        irisDelta = Math.hypot(relX - prevIris[0], relY - prevIris[1]);
+      }
+      prevIris = [relX, relY];
+
+      if (irisDelta > 2.5) {
+        post({ evt: "calibFixation", stable: false, reason: "Eyes moving" });
+        return;
+      }
+    }
+
+    post({ evt: "calibFixation", stable: true, reason: "Eyes steady" });
+  }
+
   async function onCalibStart() {
     console.info("[Drishti/frame] Calibration started: stopping gesture loop & clearing old regression data");
+    isCalibrating = true;
+    prevHead = null;
+    prevIris = null;
     stopGestureLoop();
     if (wg && typeof wg.clearData === "function") {
       try {
@@ -296,6 +403,9 @@
 
   function onCalibEnd() {
     console.info("[Drishti/frame] Calibration ended: starting gesture loop");
+    isCalibrating = false;
+    prevHead = null;
+    prevIris = null;
     if (gestureRecognizer && running) {
       startGestureLoop();
     }

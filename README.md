@@ -133,16 +133,16 @@ flowchart TD
   - **✋ Open Palm (`Open_Palm`):** Captures a high-resolution screenshot via `chrome.tabs.captureVisibleTab` and saves it to the Downloads folder.
   - **Anti-False Trigger:** Enforces wrist elevation threshold ($y \le 0.82$), confidence $\ge 0.50$, and a 2.5-second cooldown.
 
-### 7. Hands-Free 9-Dot Eye Calibration ([`gaze.js`](file:///I:/Drishti%202.0/src/content/gaze.js))
-- Sequential 9-point automated eye calibration (~14 seconds total) with 650ms saccadic settle delay per point.
-- Gathers 15 samples per dot ($135$ total) into an expanded 300-slot WebGazer regression buffer.
-- Hand gestures automatically pause during calibration to reserve 100% processing power for eye tracking.
+### 7. Interactive Gaze-Dwell Calibration ([`gaze.js`](file:///I:/Drishti%202.0/src/content/gaze.js))
+- **Center-First Orthogonal Pattern:** Starts at screen center $(50\%, 50\%)$ to lock a zero-bias neutral gaze baseline, then calibrates orthogonal axes (top, bottom, left, right) and corners.
+- **Interactive Gaze Dwell Lock:** The live gaze cursor appears directly on the calibration screen. Dots advance only when the eye cursor lands and dwells inside the target.
+- **720p HD Camera Constraint:** Requests $1280 \times 720$ camera feed for $4\times$ pupil pixel density, dramatically improving iris center detection and eliminating gaze offsets.
+- **Magnetic Snapping & Saccade Protection:** 300ms saccadic travel delay plus 40% magnetic pull settles the cursor cleanly onto target centers.
 
 ### 8. Controlled Pointer Dynamics & Anti-Jitter ([`content.js`](file:///I:/Drishti%202.0/src/content/content.js))
-- **Slew-Rate Speed Cap ($36\text{px}/\text{frame}$):** Prevents cursor jumping.
-- **Fixation Deadband ($<14\text{px}$):** Eliminates micro-tremors during sustained gaze.
-- **Progressive Damping:** Fixations ($\alpha = 0.08$), medium shifts ($\alpha = 0.14$), saccades ($\alpha = 0.22$).
-- **45% Magnetic Snap:** Anchors the gaze cursor near button centers during dwell.
+- **Responsive Damping Curve:** Tightened deadband ($6\text{px}$) ensures the pointer never freezes short of buttons; responsive damping ($\alpha = 0.22\text{--}0.75$) eliminates lag.
+- **Instant Saccadic Transition:** Speed cap expanded to $160\text{px}/\text{frame}$ so the cursor glides immediately to where the user looks.
+- **Strict Mouse Bounds:** Mouse pointer input enforces strict physical element boundaries, completely preventing accidental sidebar dwell fires during ordinary mouse use.
 
 ---
 
