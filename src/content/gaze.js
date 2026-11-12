@@ -40,6 +40,8 @@
       this._frameReady = null; // Promise resolved when frame posts {evt:'loaded'}
       this._extOrigin = new URL(ext.runtime.getURL("")).origin;
       this._overlay = null;
+      this._onCalibFixation = null;
+      this._onCalibGaze = null;
       this._onMessage = this._onMessage.bind(this);
       this._startWaiters = null; // {resolve} for the pending start() round-trip
     }
@@ -99,6 +101,16 @@
         case "gaze":
           if (this.running && !this._isCalibrating) {
             this.onGaze(d.x, d.y);
+          }
+          break;
+        case "calibGaze":
+          if (this._isCalibrating && this._onCalibGaze) {
+            this._onCalibGaze(d.x, d.y);
+          }
+          break;
+        case "calibFixation":
+          if (this._isCalibrating && this._onCalibFixation) {
+            this._onCalibFixation(d);
           }
           break;
         case "calibSample":
@@ -288,6 +300,19 @@
             stroke: #2ecc71 !important;
             stroke-dashoffset: 0px !important;
           }
+          .drishti-calib-cursor {
+            position: absolute;
+            width: 26px; height: 26px;
+            border-radius: 50%;
+            background: rgba(56, 189, 248, 0.45);
+            border: 2px solid #38bdf8;
+            box-shadow: 0 0 16px rgba(56, 189, 248, 0.9);
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            display: none;
+            z-index: 2147483649;
+            transition: left 40ms linear, top 40ms linear;
+          }
         `;
         overlay.appendChild(style);
 
@@ -302,10 +327,21 @@
         ].join(";");
         overlay.appendChild(help);
 
-        const cols = [0.1, 0.5, 0.9];
-        const rows = [0.12, 0.5, 0.88];
-        const points = [];
-        for (const ry of rows) for (const cx of cols) points.push({ cx, ry });
+        // Center-First Orthogonal Calibration Order (eliminates bias offset):
+        // 1: Dead Center (neutral forward-looking baseline origin)
+        // 2-5: Orthogonal cardinal axes (Top, Bottom, Left, Right)
+        // 6-9: Corner quadrants (Top-Left, Top-Right, Bottom-Left, Bottom-Right)
+        const points = [
+          { cx: 0.50, ry: 0.50 }, // 1. Neutral Center
+          { cx: 0.50, ry: 0.18 }, // 2. Top-Center
+          { cx: 0.50, ry: 0.82 }, // 3. Bottom-Center
+          { cx: 0.18, ry: 0.50 }, // 4. Mid-Left
+          { cx: 0.82, ry: 0.50 }, // 5. Mid-Right
+          { cx: 0.18, ry: 0.18 }, // 6. Top-Left
+          { cx: 0.82, ry: 0.18 }, // 7. Top-Right
+          { cx: 0.18, ry: 0.82 }, // 8. Bottom-Left
+          { cx: 0.82, ry: 0.82 }, // 9. Bottom-Right
+        ];
 
         let activePointIndex = 0;
         const dots = [];
@@ -329,9 +365,17 @@
           dots.push({ dot, ringFill, cx, ry });
         });
 
-        // Automatic calibration runner: settles on the dot, collects samples, and advances
+        const calibCursor = document.createElement("div");
+        calibCursor.className = "drishti-calib-cursor";
+        overlay.appendChild(calibCursor);
+
+        // Interactive Gaze Dwell Calibration runner:
+        // Dot 1: Neutral Center Anchor (clean forward eye baseline)
+        // Dots 2-9: Live Gaze Cursor with magnetic assist — dwell on dot to lock!
         const runCalibrationForPoint = (index) => {
           if (index >= points.length) {
+            this._onCalibGaze = null;
+            calibCursor.style.display = "none";
             help.textContent = "Calibration complete — initializing gaze control...";
             this._calibTimer = setTimeout(() => {
               this._post("calibEnd");
@@ -355,46 +399,128 @@
             }
           });
 
-          help.textContent = `Calibrate: keep head still & look directly at the dot center (${index + 1}/${points.length})`;
-
           const dotObj = dots[index];
           const r = dotObj.dot.getBoundingClientRect();
           const dotX = r.left + r.width / 2;
           const dotY = r.top + r.height / 2;
 
-          // 1. Settle phase (650ms): ensures user's saccade completes and eyes stabilize before recording
-          this._calibTimer = setTimeout(() => {
-            let samples = 0;
-            const totalSamples = 15; // 15 samples * 50ms = 750ms of clean steady fixation data
+          dotObj.ringFill.style.strokeDashoffset = "125.66px";
+          dotObj.ringFill.style.stroke = "#38ef7d";
 
-            this._calibInterval = setInterval(() => {
+          if (this._calibTimer) clearTimeout(this._calibTimer);
+          if (this._calibInterval) clearInterval(this._calibInterval);
+
+          // Dot 1 (Index 0): Neutral Center Anchor phase
+          if (index === 0) {
+            help.textContent = `Look steadily at the Center Dot to lock neutral eye baseline (1/${points.length})`;
+            let step = 0;
+            const TOTAL_STEPS = 20; // 20 * 65ms = 1300ms of clean initial anchor fixation
+
+            // 450ms settle period so user fixates comfortably on center
+            this._calibTimer = setTimeout(() => {
+              this._calibInterval = setInterval(() => {
+                this._post("calibrate", { x: dotX, y: dotY });
+                step++;
+
+                const progress = Math.min(1, step / TOTAL_STEPS);
+                const offset = (125.664 * (1 - progress)).toFixed(2);
+                dotObj.ringFill.style.strokeDashoffset = `${offset}px`;
+                dotObj.ringFill.style.stroke = "#2ecc71";
+                help.textContent = `Locking Center Dot... ${Math.round(progress * 100)}% (1/${points.length})`;
+
+                if (step >= TOTAL_STEPS) {
+                  clearInterval(this._calibInterval);
+                  this._calibInterval = null;
+
+                  dotObj.dot.className = "drishti-dot completed";
+                  dotObj.ringFill.style.strokeDashoffset = "0px";
+                  help.textContent = `Center locked! Guide your eye cursor onto Dot 2...`;
+
+                  this._calibTimer = setTimeout(() => {
+                    runCalibrationForPoint(1);
+                  }, 400);
+                }
+              }, 65);
+            }, 450);
+            return;
+          }
+
+          // Dots 2-9: Live Gaze Cursor Dwell Phase
+          help.textContent = `Move your gaze to Dot ${index + 1} — dwell on it to lock (${index + 1}/${points.length})`;
+          let dwellFrames = 0;
+          const DWELL_TARGET = 15; // ~500ms of sustained dwell inside target radius
+          let dotCompleted = false;
+          const pointStartTime = Date.now();
+
+          this._onCalibGaze = (gx, gy) => {
+            if (dotCompleted) return;
+
+            // Distance between gaze cursor and target dot
+            const dist = Math.hypot(gx - dotX, gy - dotY);
+            const CAPTURE_RADIUS = 160; // Magnetic capture zone
+
+            // Magnetic snap towards dot center when cursor gets close to keep eye fixated on target
+            let displayX = gx;
+            let displayY = gy;
+            if (dist <= CAPTURE_RADIUS) {
+              const pull = 0.40;
+              displayX = (1 - pull) * gx + pull * dotX;
+              displayY = (1 - pull) * gy + pull * dotY;
+            }
+
+            calibCursor.style.display = "block";
+            calibCursor.style.left = `${displayX}px`;
+            calibCursor.style.top = `${displayY}px`;
+
+            // Wait 300ms saccade latency before accumulating dwell samples
+            if (Date.now() - pointStartTime < 300) return;
+
+            if (dist <= CAPTURE_RADIUS) {
+              dwellFrames++;
+              // Record ground-truth calibration sample while dwelling on the dot
               this._post("calibrate", { x: dotX, y: dotY });
-              samples++;
 
-              const progress = samples / totalSamples;
+              const progress = Math.min(1, dwellFrames / DWELL_TARGET);
               const offset = (125.664 * (1 - progress)).toFixed(2);
               dotObj.ringFill.style.strokeDashoffset = `${offset}px`;
+              dotObj.ringFill.style.stroke = "#2ecc71";
+              help.textContent = `Gaze locked on dot! ${Math.round(progress * 100)}% (${index + 1}/${points.length})`;
 
-              if (samples >= totalSamples) {
-                clearInterval(this._calibInterval);
-                this._calibInterval = null;
+              if (dwellFrames >= DWELL_TARGET) {
+                dotCompleted = true;
+                this._onCalibGaze = null;
 
-                // Completed state for this dot
                 dotObj.dot.className = "drishti-dot completed";
                 dotObj.ringFill.style.stroke = "#2ecc71";
+                dotObj.ringFill.style.strokeDashoffset = "0px";
+                help.textContent = `Dot ${index + 1} locked! Moving to next...`;
 
-                // Brief pause before moving to the next dot
                 this._calibTimer = setTimeout(() => {
                   runCalibrationForPoint(index + 1);
-                }, 200);
+                }, 350);
               }
-            }, 50);
-          }, 650);
+            } else {
+              // Gaze cursor is away from the target dot: dwell ring drains gently
+              if (dwellFrames > 0) {
+                dwellFrames = Math.max(0, dwellFrames - 0.35);
+                const progress = dwellFrames / DWELL_TARGET;
+                const offset = (125.664 * (1 - progress)).toFixed(2);
+                dotObj.ringFill.style.strokeDashoffset = `${offset}px`;
+              }
+              help.textContent = `Look at Dot ${index + 1} — guide your cursor onto it (${index + 1}/${points.length})`;
+
+              // Anti-deadlock: auto-advance if uncalibrated corner is offset after 4.5s
+              if (Date.now() - pointStartTime > 4500) {
+                advanceImmediately();
+              }
+            }
+          };
         };
 
         // Manual skip/advance override (Spacebar or click)
         const advanceImmediately = () => {
           if (activePointIndex >= points.length) return;
+          this._onCalibGaze = null;
           if (this._calibInterval) {
             clearInterval(this._calibInterval);
             this._calibInterval = null;
@@ -435,7 +561,7 @@
         (document.body || document.documentElement).appendChild(overlay);
         this._overlay = overlay;
 
-        // Kick off automatic progression starting from dot 0
+        // Kick off fixation progression starting from dot 0
         this._calibTimer = setTimeout(() => {
           runCalibrationForPoint(0);
         }, 500);
@@ -444,6 +570,8 @@
 
     _removeOverlay() {
       this._isCalibrating = false;
+      this._onCalibFixation = null;
+      this._onCalibGaze = null;
       if (this._calibTimer) {
         clearTimeout(this._calibTimer);
         this._calibTimer = null;

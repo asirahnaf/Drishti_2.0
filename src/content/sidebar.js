@@ -256,6 +256,9 @@
         ? (window.Drishti?.AAC_PHRASES || [])
         : BUTTONS;
 
+      const groupEl = this.isAacOpen ? this.aacGroup : this.navGroup;
+      const groupRect = groupEl?.getBoundingClientRect();
+
       return activeList.map((b) => ({
         id: b.id,
         action: b.id,
@@ -263,7 +266,7 @@
           const btnObj = this.buttons.get(b.id);
           if (!btnObj?.el) return null;
           const r = btnObj.el.getBoundingClientRect();
-          // Expand horizontal hitbox to cover the right 35% of the screen (Fitts' Law)
+          // Expand horizontal hitbox to cover the right 35% of the screen (Fitts' Law) for Gaze
           // Safe reading area remains on the left 65% of the viewport
           const triggerLeft = Math.min(r.left - 450, window.innerWidth * 0.65);
           return {
@@ -271,6 +274,16 @@
             right: r.right,
             top: r.top,
             bottom: r.bottom,
+            // Raw physical button bounds for mouse
+            rawRect: {
+              left: r.left,
+              right: r.right,
+              top: r.top,
+              bottom: r.bottom
+            },
+            // Container vertical boundaries
+            containerTop: groupRect?.top ?? 75,
+            containerBottom: groupRect?.bottom ?? window.innerHeight,
           };
         },
       }));

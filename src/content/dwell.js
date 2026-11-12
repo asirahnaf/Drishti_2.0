@@ -48,8 +48,9 @@
     }
 
     /** Feed a viewport point (mouse now, gaze later). */
-    update(x, y) {
+    update(x, y, source = "gaze") {
       this.point = { x, y };
+      this.source = source;
     }
 
     /** Point left the tracked surface entirely (e.g. mouse off-window). */
@@ -77,13 +78,34 @@
     }
 
     _zoneAt(x, y) {
+      // 1. Mouse input: Strict physical hit testing.
+      // The mouse cursor MUST be physically hovering over the button element.
+      // Prevents the mouse from accidentally triggering dwell when elsewhere on the page.
+      if (this.source === "mouse") {
+        for (const z of this.zones) {
+          const r = z.getRect();
+          if (!r) continue;
+          const btn = r.rawRect || r;
+          if (x >= btn.left && x <= btn.right && y >= btn.top && y <= btn.bottom) {
+            return z;
+          }
+        }
+        return null;
+      }
+
+      // 2. Gaze input: Wide 35% horizontal Voronoi acquisition
       let bestZone = null;
       let minDistanceY = Infinity;
 
       for (const z of this.zones) {
         const r = z.getRect();
         if (!r) continue;
-        // Must be within expanded horizontal trigger band
+
+        // Never trigger if gaze is looking at top header controls (Gaze/Voice toggles) or below container
+        if (r.containerTop !== undefined && y < r.containerTop - 15) continue;
+        if (r.containerBottom !== undefined && y > r.containerBottom + 15) continue;
+
+        // Must be within expanded horizontal trigger band (right 35% of viewport)
         if (x >= r.left && x <= (r.right + 30)) {
           const centerY = (r.top + r.bottom) / 2;
           const distY = Math.abs(y - centerY);

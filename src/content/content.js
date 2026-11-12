@@ -477,7 +477,7 @@
     // with gaze enabled, the mouse can still drive the same dwell engine.
     window.addEventListener("mousemove", (e) => {
       lastMouseMoveTime = Date.now();
-      dwell.update(e.clientX, e.clientY);
+      dwell.update(e.clientX, e.clientY, "mouse");
       window.Drishti?.dictationInstance?.updatePointer(e.clientX, e.clientY);
     }, {
       passive: true,
@@ -508,24 +508,25 @@
               const dy = curY - smoothedY;
               const dist = Math.hypot(dx, dy);
 
-              // 1. Fixation Deadband: within 14px, keep pointer steady to eliminate micro-tremor vibration
-              if (dist >= 14) {
-                // 2. Controlled Damping Curve:
-                // Small movements (<45px): heavy damping (alpha 0.08) for stable button dwelling
-                // Medium shifts (45-150px): gentle cruise (alpha 0.14)
-                // Saccades (>150px): smooth glide (alpha 0.22)
+              // 1. Fixation Deadband: within 6px, keep pointer steady to eliminate micro-tremor vibration
+              // (tightened from 14px to eliminate offset stopping short)
+              if (dist >= 6) {
+                // 2. High-Responsiveness Damping Curve:
+                // Small movements (<35px): alpha 0.22 ensures full convergence with no visual lag
+                // Medium shifts (35-120px): alpha 0.40 fast transit
+                // Saccades (>120px): alpha 0.75 snaps immediately to target with zero trailing
                 let alpha;
-                if (dist < 45) {
-                  alpha = 0.08;
-                } else if (dist < 150) {
-                  alpha = 0.14;
-                } else {
+                if (dist < 35) {
                   alpha = 0.22;
+                } else if (dist < 120) {
+                  alpha = 0.40;
+                } else {
+                  alpha = 0.75;
                 }
 
                 let step = alpha * dist;
-                // 3. Slew Rate Cap: max 36px per frame so the pointer never darts or flies wildly
-                const MAX_STEP_PX = 36;
+                // 3. Slew Rate Cap: relaxed to 160px/frame to eliminate saccadic lag offset
+                const MAX_STEP_PX = 160;
                 if (step > MAX_STEP_PX) {
                   step = MAX_STEP_PX;
                 }
@@ -552,7 +553,7 @@
             }
             sidebar.updateGazeCursor(cursorX, cursorY, true);
 
-            dwell.update(smoothedX, smoothedY);
+            dwell.update(smoothedX, smoothedY, "gaze");
             window.Drishti?.dictationInstance?.updatePointer(cursorX, cursorY);
           } else {
             smoothedX = null;
