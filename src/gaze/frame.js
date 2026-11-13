@@ -119,6 +119,15 @@
       wg.setGazeListener((data) => {
         if (!running) return;
 
+        // Head Motion Mode: 3D head pitch & yaw derived from rigid facial landmarks
+        if (trackingMode === "head") {
+          const head = computeHeadPoseCoords();
+          if (head) {
+            post({ evt: "gaze", x: head.x, y: head.y, mode: "head" });
+            return;
+          }
+        }
+
         // When calibrating: stream live gaze coordinates for calibration cursor
         if (isCalibrating) {
           if (data && Number.isFinite(data.x) && Number.isFinite(data.y)) {
@@ -136,7 +145,7 @@
         if (Number.isFinite(x) && Number.isFinite(y)) {
           const clampedX = Math.max(-100, Math.min(window.innerWidth + 100, x));
           const clampedY = Math.max(-100, Math.min(window.innerHeight + 100, y));
-          post({ evt: "gaze", x: clampedX, y: clampedY });
+          post({ evt: "gaze", x: clampedX, y: clampedY, mode: "gaze" });
         }
       });
 
@@ -431,6 +440,79 @@
     } catch (_) {}
   }
 
+  // --- Head Pose Kinematics (Pitch & Yaw via 3D FaceMesh Landmarks) ---
+  let trackingMode = "gaze"; // "gaze" or "head"
+  let neutralYaw = null;
+  let neutralPitch = null;
+  let lastRawHeadYaw = 0;
+  let lastRawHeadPitch = 0;
+
+  function computeHeadPoseCoords() {
+    if (!wg || !running) return null;
+    const tracker = wg.getTracker();
+    if (!tracker) return null;
+    const positions = tracker.getPositions();
+    if (!positions || positions.length < 468) return null;
+
+    // Landmark 1: Nose tip
+    // Landmark 168: Nose bridge (midpoint between eyes)
+    // Landmark 33: Outer left eye corner
+    // Landmark 263: Outer right eye corner
+    // Landmark 152: Chin bottom
+    const p1 = positions[1];
+    const p168 = positions[168];
+    const p33 = positions[33];
+    const p263 = positions[263];
+    const p152 = positions[152];
+
+    if (!p1 || !p168 || !p33 || !p263 || !p152) return null;
+
+    // 1. Horizontal Head Yaw: Scale-invariant offset of nose tip relative to eye midpoint
+    const midEyeX = (p33[0] + p263[0]) / 2;
+    const faceW = Math.hypot(p263[0] - p33[0], p263[1] - p33[1]) || 1;
+    const rawYaw = (p1[0] - midEyeX) / faceW;
+
+    // 2. Vertical Head Pitch: Scale-invariant distance from nose bridge to nose tip
+    const faceH = Math.hypot(p152[0] - p168[0], p152[1] - p168[1]) || 1;
+    const rawPitch = (p1[1] - p168[1]) / faceH;
+
+    lastRawHeadYaw = rawYaw;
+    lastRawHeadPitch = rawPitch;
+
+    // Auto-anchor neutral reference on initial face capture
+    if (neutralYaw === null || neutralPitch === null) {
+      neutralYaw = rawYaw;
+      neutralPitch = rawPitch;
+    }
+
+    const deltaYaw = rawYaw - neutralYaw;
+    const deltaPitch = rawPitch - neutralPitch;
+
+    // Sensitivity gains: ±12° head turn and ±10° nod covers the full viewport
+    const GAIN_YAW = 4.2;
+    const GAIN_PITCH = 4.8;
+
+    const targetX = (window.innerWidth / 2) + (deltaYaw * window.innerWidth * GAIN_YAW);
+    const targetY = (window.innerHeight / 2) + (deltaPitch * window.innerHeight * GAIN_PITCH);
+
+    return {
+      x: Math.max(-50, Math.min(window.innerWidth + 50, targetX)),
+      y: Math.max(-50, Math.min(window.innerHeight + 50, targetY)),
+    };
+  }
+
+  function recenterHeadPose() {
+    if (Number.isFinite(lastRawHeadYaw) && Number.isFinite(lastRawHeadPitch) && lastRawHeadPitch !== 0) {
+      neutralYaw = lastRawHeadYaw;
+      neutralPitch = lastRawHeadPitch;
+      console.info(`[Drishti/frame] Head pose re-centered to neutral: yaw=${neutralYaw.toFixed(3)}, pitch=${neutralPitch.toFixed(3)}`);
+      post({ evt: "toast", msg: "🎯 Head pose re-centered to neutral", ms: 2000 });
+    } else {
+      neutralYaw = null;
+      neutralPitch = null;
+    }
+  }
+
   // --- Two-Stage Audio Processing: Decibel Gate + RNNoise Neural VAD ---
   let audioCtx = null;
   let audioStream = null;
@@ -660,6 +742,15 @@
       case "stopGestures":  stopGestureLoop(); break;
       case "startAudio":    startAudioProcessor(); break;
       case "stopAudio":     stopAudioProcessor(); break;
+      case "setTrackingMode":
+        trackingMode = d.mode === "head" ? "head" : "gaze";
+        neutralYaw = null;
+        neutralPitch = null;
+        console.info(`[Drishti/frame] Tracking mode switched to: ${trackingMode}`);
+        break;
+      case "recenter":
+        recenterHeadPose();
+        break;
       case "preview":       preview(d.on); break;
       case "stop":          stop(); break;
     }

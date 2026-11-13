@@ -26,6 +26,7 @@ const DEFAULT_SETTINGS = {
   sidebarEnabled: true,
   gazeEnabled: false, // mouse-driven until Step 3 wires WebGazer
   voiceEnabled: false,
+  trackingMode: "gaze", // "gaze" (iris eye tracking) or "head" (3D head pose)
 };
 
 const SETTINGS_KEY = "drishti:settings";

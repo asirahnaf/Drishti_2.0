@@ -162,10 +162,23 @@ flowchart TD
 - **720p HD Camera Constraint:** Requests $1280 \times 720$ camera feed for $4\times$ pupil pixel density, dramatically improving iris center detection and eliminating gaze offsets.
 - **Magnetic Snapping & Saccade Protection:** 300ms saccadic travel delay plus 40% magnetic pull settles the cursor cleanly onto target centers.
 
-### 9. Controlled Pointer Dynamics & Anti-Jitter ([`content.js`](file:///I:/Drishti%202.0/src/content/content.js))
-- **Responsive Damping Curve:** Tightened deadband ($6\text{px}$) ensures the pointer never freezes short of buttons; responsive damping ($\alpha = 0.22\text{--}0.75$) eliminates lag.
-- **Instant Saccadic Transition:** Speed cap expanded to $160\text{px}/\text{frame}$ so the cursor glides immediately to where the user looks.
+### 9. Opentrack-Inspired Accela Velocity Damping Filter ([`content.js`](file:///I:/Drishti%202.0/src/content/content.js))
+- **Continuous Non-Linear Power Gain:** Replaces stepped damping with a continuous velocity-coupled response curve:
+  $$\alpha = \alpha_{\min} + (\alpha_{\max} - \alpha_{\min}) \cdot \left(\frac{\text{dist} - D_{\text{deadband}}}{D_{\text{saccade}} - D_{\text{deadband}}}\right)^{1.5}$$
+  - **Stationary / Button Dwell ($\le 3.5\text{px}$):** Deadband freezes sensor noise and micro-tremors completely, preventing jitter and accidental dwell drops.
+  - **Saccadic Travel ($> 95\text{px}$):** Smoothing instantly scales to $\alpha = 0.85$ ($180\text{px}/\text{frame}$ slew cap), snapping directly to targets with zero lag.
 - **Strict Mouse Bounds:** Mouse pointer input enforces strict physical element boundaries, completely preventing accidental sidebar dwell fires during ordinary mouse use.
+
+### 10. Head Motion Tracking Mode ([`frame.js`](file:///I:/Drishti%202.0/src/gaze/frame.js), [`sidebar.js`](file:///I:/Drishti%202.0/src/content/sidebar.js))
+- **3D Head Pose Kinematics (Pitch & Yaw):** Derives scale-invariant head rotation from MediaPipe FaceMesh rigid facial landmarks (nose tip `#1`, nose bridge `#168`, chin `#152`, and outer eye corners `#33`/`#263`):
+  $$\text{Yaw} = \frac{x_1 - x_{\text{mid}}}{W_{\text{face}}}, \quad \text{Pitch} = \frac{y_1 - y_{168}}{H_{\text{face}}}$$
+- **Instant Start Without 9-Point Calibration:** Users with head mobility (e.g. quadriplegia, cerebral palsy) can bypass the 9-dot eye calibration routine entirely. Tracking starts instantly from the current neutral head angle.
+- **One-Click Mode Switcher:** Toggle between **`👁️ Eye Gaze`** and **`👤 Head Motion`** via the sidebar mode pill, keyboard shortcut (`Alt + M`), or voice (*"Switch to head mode"*, *"Switch to gaze mode"*).
+
+### 11. Instant Posture Re-Centering (Opentrack Zero) ([`voice.js`](file:///I:/Drishti%202.0/src/content/voice.js), [`gaze.js`](file:///I:/Drishti%202.0/src/content/gaze.js))
+- **1-Second Drift Reset:** When adjusting chair position, slumping, or turning, saying **"Center"** or **"Recenter"** (or pressing `Alt + C`) instantly re-zeros the baseline origin:
+  $$\Delta x = \frac{\text{innerWidth}}{2} - x_{\text{current}}, \quad \Delta y = \frac{\text{innerHeight}}{2} - y_{\text{current}}$$
+- In Head Motion Mode, automatically re-anchors neutral head yaw and pitch without requiring a recalibration.
 
 ---
 
@@ -174,6 +187,8 @@ flowchart TD
 | Shortcut | Description |
 | :--- | :--- |
 | `C` | Start / restart hands-free 9-dot eye calibration |
+| `Alt + C` | Instant 1-second pointer / head posture re-center (Opentrack zero) |
+| `Alt + M` | Toggle Tracking Mode between `👁️ Eye Gaze` and `👤 Head Motion` |
 | `Alt + V` | Toggle Voice Engine (speech commands & navigation) |
 | `Alt + L` | Toggle Vimium-style Numbered Link Hints overlay |
 | `Alt + A` | Toggle AAC Quick Talk Speech Drawer |

@@ -27,17 +27,23 @@
   class GazeController {
     /**
      * @param {object} opts
-     * @param {(x:number,y:number)=>void} opts.onGaze  viewport gaze coords
+     * @param {(x:number,y:number,mode?:string)=>void} opts.onGaze  viewport gaze coords
      * @param {(gesture:string, score:number)=>void} opts.onGesture hand gesture recognition
      * @param {()=>void} opts.onCalibComplete calibration finished
      * @param {(state:object)=>void} opts.onAudioState audio gate and RNNoise VAD state
+     * @param {string} [opts.trackingMode] "gaze" or "head"
      * @param {(msg:string, ms?:number)=>void} opts.toast  user-facing status
      */
-    constructor({ onGaze, onGesture, onCalibComplete, onAudioState, toast }) {
+    constructor({ onGaze, onGesture, onCalibComplete, onAudioState, trackingMode = "gaze", toast }) {
       this.onGaze = onGaze || (() => {});
       this.onGesture = onGesture || (() => {});
       this.onCalibComplete = onCalibComplete || (() => {});
       this.onAudioState = onAudioState || (() => {});
+      this.trackingMode = trackingMode; // "gaze" or "head"
+      this.recenterOffsetX = 0;
+      this.recenterOffsetY = 0;
+      this.lastRawX = window.innerWidth / 2;
+      this.lastRawY = window.innerHeight / 2;
       this.toast = toast || (() => {});
       this.running = false;
       this.iframe = null;
@@ -104,7 +110,11 @@
           break;
         case "gaze":
           if (this.running && !this._isCalibrating) {
-            this.onGaze(d.x, d.y);
+            this.lastRawX = d.x;
+            this.lastRawY = d.y;
+            const finalX = Math.max(0, Math.min(window.innerWidth, d.x + this.recenterOffsetX));
+            const finalY = Math.max(0, Math.min(window.innerHeight, d.y + this.recenterOffsetY));
+            this.onGaze(finalX, finalY, d.mode);
           }
           break;
         case "calibGaze":
@@ -162,24 +172,27 @@
       }
     }
 
-    /** Turn gaze ON: load frame, start camera+model, then calibrate. */
+    /** Turn gaze/head tracking ON: load frame, start camera+model. */
     async enable() {
       if (this.running) return true;
-      this.toast("Starting camera for gaze…", 3000);
+      const isHead = this.trackingMode === "head";
+      this.toast(isHead ? "Starting camera for head tracking…" : "Starting camera for gaze…", 3000);
 
       try {
         await this._ensureFrame();
       } catch (err) {
-        console.error("[Drishti] gaze frame load failed:", err);
-        this.toast("Gaze engine could not load — mouse still works", 6000);
+        console.error("[Drishti] tracking frame load failed:", err);
+        this.toast("Tracking engine could not load — mouse still works", 6000);
         return false;
       }
 
-      // Kick off WebGazer in the frame and wait for ready/error. Preview on so the
-      // user can see a small camera pip while aligning their face for calibration.
+      // Configure tracking mode in the frame
+      this._post("setTrackingMode", { mode: this.trackingMode });
+
+      // Kick off WebGazer in the frame. Preview on for eye gaze calibration.
       const outcome = await new Promise((resolve) => {
         this._startWaiters = { resolve };
-        this._post("start", { opts: { preview: true } });
+        this._post("start", { opts: { preview: !isHead } });
         // Safety net: model download / permission dialog can be slow.
         setTimeout(() => {
           if (this._startWaiters) {
@@ -190,7 +203,7 @@
       });
 
       if (outcome instanceof Error) {
-        console.error("[Drishti] WebGazer failed to start:", outcome.camName || "", outcome.message);
+        console.error("[Drishti] Tracking failed to start:", outcome.camName || "", outcome.message);
         const name = outcome.camName || "";
         let m;
         if (name === "NotAllowedError" || /denied|NotAllowed/i.test(outcome.message)) {
@@ -200,30 +213,58 @@
         } else if (name === "NotReadableError") {
           m = "Camera is in use by another app. Close it and retry — mouse still works";
         } else {
-          m = "Camera/gaze unavailable — mouse still works";
+          m = "Camera tracking unavailable — mouse still works";
         }
         this.toast(m, 7000);
         return false;
       }
 
       this.running = true;
+      this.recenterOffsetX = 0;
+      this.recenterOffsetY = 0;
+
+      // In Head Motion Mode: zero 9-point calibration needed! Starts instantly from current neutral pose.
+      if (isHead) {
+        this._post("preview", { on: false });
+        this.toast("👤 Head Motion Active — tilt/turn head to steer", 4000);
+        return true;
+      }
+
+      // In Eye Gaze Mode: run 9-dot calibration
       await this.calibrate();
-      // Calibration done — hide the video pip for privacy during normal use.
       this._post("preview", { on: false });
       return true;
     }
 
-    /** Turn gaze OFF and release the camera. */
+    /** Turn tracking OFF and release the camera. */
     async disable() {
       if (!this.running) return;
       this._post("stop");
       this.running = false;
       this._removeOverlay();
-      this.toast("Gaze off — mouse control active");
+      this.recenterOffsetX = 0;
+      this.recenterOffsetY = 0;
+      this.toast("Tracking off — mouse control active");
     }
 
     async toggle() {
       return this.running ? (await this.disable(), false) : await this.enable();
+    }
+
+    /** Switch tracking mode ("gaze" vs "head"). */
+    setTrackingMode(mode) {
+      this.trackingMode = mode === "head" ? "head" : "gaze";
+      this.recenterOffsetX = 0;
+      this.recenterOffsetY = 0;
+      this._post("setTrackingMode", { mode: this.trackingMode });
+    }
+
+    /** Re-anchor tracking to the user's current posture (Opentrack zero). */
+    recenter() {
+      this._post("recenter");
+      this.recenterOffsetX = (window.innerWidth / 2) - this.lastRawX;
+      this.recenterOffsetY = (window.innerHeight / 2) - this.lastRawY;
+      this.toast("🎯 Re-centered tracking to current posture", 2200);
     }
 
     /** Start audio processor (RNNoise neural filter + decibel gate) in the extension frame. */

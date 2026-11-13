@@ -312,7 +312,49 @@
 
       // 1. Help & Guide
       if (text.includes("help") || text.includes("commands") || text.includes("what can i say")) {
-        this.toast("🗣️ Say: 'Scroll down', 'Scroll up', 'Go to YouTube', 'Search [topic]', 'Screenshot'", 4500);
+        this.toast("🗣️ Say: 'Scroll down', 'Center', 'Head mode', 'Eye mode', 'Show links', 'Search [topic]'", 5000);
+        return;
+      }
+
+      // 1.5 Opentrack-Inspired Real-Time Recenter & Tracking Mode Switch
+      if (
+        text === "center" ||
+        text === "recenter" ||
+        text === "re center" ||
+        text === "reset center" ||
+        text === "center pointer" ||
+        text === "center gaze" ||
+        text === "center head" ||
+        text.includes("recenter")
+      ) {
+        this.toast("🎯 Re-centering pointer to current posture");
+        this._dispatch({ action: "recenter", transcript: rawText });
+        return;
+      }
+
+      if (
+        text.includes("head mode") ||
+        text.includes("head tracking") ||
+        text === "switch to head" ||
+        text === "use head" ||
+        text === "head motion"
+      ) {
+        this.toast("👤 Switched to Head Motion Mode");
+        this._dispatch({ action: "set-tracking-mode", mode: "head", transcript: rawText });
+        return;
+      }
+
+      if (
+        text.includes("gaze mode") ||
+        text.includes("eye mode") ||
+        text.includes("eye tracking") ||
+        text.includes("eye gaze") ||
+        text === "switch to gaze" ||
+        text === "switch to eye" ||
+        text === "use eye"
+      ) {
+        this.toast("👁️ Switched to Eye Gaze Mode");
+        this._dispatch({ action: "set-tracking-mode", mode: "gaze", transcript: rawText });
         return;
       }
 
