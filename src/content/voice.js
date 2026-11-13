@@ -49,6 +49,9 @@
       this.consecutiveFailures = 0;
       this.lastStartTime = 0;
       this.dictationMode = false;
+      this.lastSpeechTime = 0;
+      this.audioActive = false;
+      this.audioState = { gateOpen: false, isSpeech: false, vadProb: 0, dB: -100 };
       this.onCommandCallback = options.onCommand || null;
       this.onStatusCallback = options.onStatus || null;
       this.toast = options.toast || ((msg) => console.log("[Drishti Voice]", msg));
@@ -163,6 +166,15 @@
       }
     }
 
+    updateAudioState(state) {
+      if (!state) return;
+      this.audioState = state;
+      this.audioActive = true;
+      if (state.isSpeech) {
+        this.lastSpeechTime = Date.now();
+      }
+    }
+
     async start(showToast = true) {
       if (!this.recognition) {
         this.toast("Speech Recognition not supported on this page.");
@@ -172,7 +184,15 @@
       this.active = true;
       this.hasFatalError = false;
       this.consecutiveFailures = 0;
+      this.lastSpeechTime = Date.now(); // 1500ms grace window on startup
       this._emitStatus({ active: true, isListening: false });
+
+      // Start the extension-frame audio processor (RNNoise + Decibel Gate)
+      try {
+        this.options.startAudioProcessor?.();
+      } catch (e) {
+        console.warn("[Drishti Voice] startAudioProcessor failed:", e);
+      }
 
       // Start Web Speech Recognition directly
       try {
@@ -192,7 +212,16 @@
 
     stop() {
       this.active = false;
+      this.audioActive = false;
       clearTimeout(this.restartTimer);
+
+      // Stop the extension-frame audio processor
+      try {
+        this.options.stopAudioProcessor?.();
+      } catch (e) {
+        console.warn("[Drishti Voice] stopAudioProcessor failed:", e);
+      }
+
       if (this.recognition) {
         try {
           this.recognition.stop();
@@ -220,6 +249,17 @@
 
     _handleTranscript(rawText) {
       if (!rawText) return;
+
+      // Two-Stage Audio Guard: Decibel Gate + RNNoise Neural VAD
+      // When audio processor is active, verify that human speech was confirmed
+      // within the last 1400ms. If not, this transcript is background noise / fan / cough.
+      if (this.audioActive) {
+        const elapsed = Date.now() - this.lastSpeechTime;
+        if (elapsed > 1400) {
+          console.warn(`[Drishti Voice] Blocked non-speech noise trigger: "${rawText}" (VAD silent for ${elapsed}ms)`);
+          return;
+        }
+      }
 
       // Clean punctuation & excess whitespace everywhere
       const text = rawText

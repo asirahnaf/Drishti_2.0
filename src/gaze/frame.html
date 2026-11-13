@@ -29,11 +29,12 @@
   </style>
 </head>
 <body>
-  <!-- Load order: preload shims, webgazer, vision wasm loader & bundle, then frame.js -->
+  <!-- Load order: preload shims, webgazer, vision wasm loader & bundle, rnnoise, then frame.js -->
   <script src="preload.js"></script>
   <script src="../vendor/webgazer.js"></script>
   <script src="../vendor/mediapipe/gesture_recognizer/wasm/vision_wasm_internal.js"></script>
   <script src="../vendor/mediapipe/gesture_recognizer/vision_bundle.js"></script>
+  <script src="../vendor/rnnoise/rnnoise.js"></script>
   <script src="frame.js"></script>
 </body>
 </html>

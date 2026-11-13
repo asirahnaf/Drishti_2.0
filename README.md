@@ -16,7 +16,8 @@ flowchart TD
         Mouse["🖱️ Mouse Fallback<br/>(Pointer move)"]
         Gaze["👁️ Gaze Tracking<br/>WebGazer + FaceMesh iframe<br/>(300-slot buffer · Kalman filtered)"]
         Gesture["✋ Camera Hand Gestures<br/>MediaPipe Tasks Vision<br/>(Local WASM · Thumbs Up & Palm)"]
-        Voice["🎙️ Voice Engine<br/>Web Speech API<br/>(Phonetic Parser · Multi-tab Sync)"]
+        Voice["🎙️ Voice Commands<br/>Web Speech API<br/>(Phonetic Parser · Multi-tab Sync)"]
+        AudioFilter["🧠 Neural Noise Filter<br/>RNNoise WASM + Decibel Gate<br/>(Local 48kHz VAD · Hum & Chatter Block)"]
     end
 
     subgraph Interactive ["Interactive Engines"]
@@ -48,6 +49,7 @@ flowchart TD
     Gesture -->|"Thumb_Up"| Like
     Gesture -->|"Open_Palm"| Screenshot
 
+    AudioFilter -.->|"VAD Guard (P ≥ 0.65)"| Voice
     Voice -->|"Search [query]"| SiteSearch
     Voice -->|"Go to [site] / Back / Forward"| WebNav
     Voice -->|"Show links / hints"| Hints
@@ -66,7 +68,7 @@ flowchart TD
     Dictation --> SendPost
 
     classDef done fill:#1f7a3d,stroke:#2ecc71,color:#ffffff;
-    class Mouse,Gaze,Gesture,Voice,Dwell,Sidebar,Hints,AAC,Dictation,ScrollUp,ScrollDown,Share,Read,Like,Screenshot,SiteSearch,WebNav,ClickHint,SpeakAAC,SendPost done;
+    class Mouse,Gaze,Gesture,Voice,AudioFilter,Dwell,Sidebar,Hints,AAC,Dictation,ScrollUp,ScrollDown,Share,Read,Like,Screenshot,SiteSearch,WebNav,ClickHint,SpeakAAC,SendPost done;
 ```
 
 ---
@@ -86,6 +88,19 @@ flowchart TD
   - Synchronizes user activation state via `chrome.storage.local` across all open tabs.
   - Automatically recovers from routine Chromium speech recognition WebSocket disconnections (`network` error) without turning off the toggle or prompting for permissions.
 
+### 2. Two-Stage Audio Noise Suppression & RNNoise Neural VAD ([`frame.js`](file:///I:/Drishti%202.0/src/gaze/frame.js), [`voice.js`](file:///I:/Drishti%202.0/src/content/voice.js))
+- **Stage 1: Adaptive Decibel / Energy Gate (RMS):**
+  - Instantaneous root-mean-square audio energy analysis in Web Audio API at 48kHz.
+  - Automatically suppresses constant background fan hum, air conditioning, and room noise below $-44\text{ dB}$.
+  - $350\text{ms}$ hangover hold prevents phrase truncation between syllables and natural vocal pauses.
+- **Stage 2: Offline Bundled Mozilla RNNoise Neural Network (WASM):**
+  - Zero external network dependencies, zero cloud latency (bundled in `src/vendor/rnnoise/`).
+  - Processes 480-sample blocks ($10\text{ms}$ audio frames scaled to 16-bit PCM) through a recurrent neural network to compute Voice Activity Detection ($P_{\text{VAD}} \in [0.0, 1.0]$).
+  - Rejects false speech triggers caused by keyboard clicking, desk taps, TV background audio, coughing, or throat clearing ($P_{\text{VAD}} < 0.65$).
+- **Dual Visual Voice Feedback:**
+  - When Voice is active but silent: the sidebar toggle displays a calm blue dot.
+  - When the user actively speaks: the button dot immediately illuminates **vibrant emerald green** (`#2ecc71`) with an energetic pulse, confirming verified human speech in real-time.
+
 ### 2. Vimium-Style Numbered Link Hints ([`hints.js`](file:///I:/Drishti%202.0/src/content/hints.js))
 - **Hands-Free Deep-Page Navigation:**
   - Triggered by saying *"Show links"*, *"Show hints"*, or pressing `Alt + L`.
@@ -94,7 +109,15 @@ flowchart TD
   - Speak *"Click 4"* or simply *"4"* to simulate an authentic user click and automatically dismiss all active badges.
   - Auto-hides after 12 seconds of inactivity or upon page scroll.
 
-### 3. AAC Quick-Reply Speech Dock ([`aac.js`](file:///I:/Drishti%202.0/src/content/aac.js), [`sidebar.js`](file:///I:/Drishti%202.0/src/content/sidebar.js))
+### 3. Vimium-Style Numbered Link Hints ([`hints.js`](file:///I:/Drishti%202.0/src/content/hints.js))
+- **Hands-Free Deep-Page Navigation:**
+  - Triggered by saying *"Show links"*, *"Show hints"*, or pressing `Alt + L`.
+  - Scans the visible viewport and overlays high-contrast yellow numbered badges (`[1]`, `[2]`, `[3]`, ...) over all visible links, buttons, and form inputs.
+- **Direct Speech or Shortcut Selection:**
+  - Speak *"Click 4"* or simply *"4"* to simulate an authentic user click and automatically dismiss all active badges.
+  - Auto-hides after 12 seconds of inactivity or upon page scroll.
+
+### 4. AAC Quick-Reply Speech Dock ([`aac.js`](file:///I:/Drishti%202.0/src/content/aac.js), [`sidebar.js`](file:///I:/Drishti%202.0/src/content/sidebar.js))
 - **Immediate Communication for Non-Verbal Users:**
   - Dwell on the sidebar **`Quick Talk`** tile or press `Alt + A` to toggle an Augmentative and Alternative Communication (AAC) speech drawer.
   - Provides 6 ultra-large, high-contrast dwellable phrase buttons:
@@ -108,7 +131,7 @@ flowchart TD
   1. Immediately announces the phrase aloud at 100% volume through device speakers using browser-native `SpeechSynthesis`.
   2. Automatically inserts the phrase into any active chat input or message composer (e.g., Discord, WhatsApp Web, Slack, Messenger).
 
-### 4. Social Media Voice Dictation & Gaze Guardrail ([`dictation.js`](file:///I:/Drishti%202.0/src/content/dictation.js))
+### 5. Social Media Voice Dictation & Gaze Guardrail ([`dictation.js`](file:///I:/Drishti%202.0/src/content/dictation.js))
 - **Smart Input Detection:**
   - Automatically binds to focused `input[type="text"]`, `textarea`, or modern `[contenteditable]` rich text editors (Twitter/X, Facebook, YouTube comment threads).
   - Compatible with React and Vue virtual DOMs using prototype value descriptor dispatchers.
@@ -117,7 +140,7 @@ flowchart TD
   - Features a **1.5-second SVG Circular Dwell Ring** on `[Confirm & Send]`.
   - Fixating gaze or hovering on the button fills the green dwell progress ring before submitting the form or pressing `Enter`, protecting motor-impaired users from premature accidental sends.
 
-### 5. Streamlined 4-Button Sidebar ([`sidebar.js`](file:///I:/Drishti%202.0/src/content/sidebar.js))
+### 6. Streamlined 4-Button Sidebar ([`sidebar.js`](file:///I:/Drishti%202.0/src/content/sidebar.js))
 - Isolated in a shadow root on the right viewport edge.
 - Header row with independent **Gaze** and **Voice** toggles.
 - 4 primary utility targets (~200px tall each, occupying 25% of screen height):
@@ -127,19 +150,19 @@ flowchart TD
   - **`Down` (▼):** Smooth page scroll down (+80% viewport).
 - **Wide Fitts' Law Hitboxes:** 35% horizontal screen acquisition zone (`0.65 * innerWidth` to right edge) with zero-gap 1D Voronoi partitioning.
 
-### 6. Camera Hand Gestures ([`frame.js`](file:///I:/Drishti%202.0/src/gaze/frame.js), [`content.js`](file:///I:/Drishti%202.0/src/content/content.js))
+### 7. Camera Hand Gestures ([`frame.js`](file:///I:/Drishti%202.0/src/gaze/frame.js), [`content.js`](file:///I:/Drishti%202.0/src/content/content.js))
 - Bundled MediaPipe Tasks Vision `GestureRecognizer` running locally in sandbox iframe:
   - **👍 Thumbs Up (`Thumb_Up`):** Likes the current YouTube video or posts an affirmative toast.
   - **✋ Open Palm (`Open_Palm`):** Captures a high-resolution screenshot via `chrome.tabs.captureVisibleTab` and saves it to the Downloads folder.
   - **Anti-False Trigger:** Enforces wrist elevation threshold ($y \le 0.82$), confidence $\ge 0.50$, and a 2.5-second cooldown.
 
-### 7. Interactive Gaze-Dwell Calibration ([`gaze.js`](file:///I:/Drishti%202.0/src/content/gaze.js))
+### 8. Interactive Gaze-Dwell Calibration ([`gaze.js`](file:///I:/Drishti%202.0/src/content/gaze.js))
 - **Center-First Orthogonal Pattern:** Starts at screen center $(50\%, 50\%)$ to lock a zero-bias neutral gaze baseline, then calibrates orthogonal axes (top, bottom, left, right) and corners.
 - **Interactive Gaze Dwell Lock:** The live gaze cursor appears directly on the calibration screen. Dots advance only when the eye cursor lands and dwells inside the target.
 - **720p HD Camera Constraint:** Requests $1280 \times 720$ camera feed for $4\times$ pupil pixel density, dramatically improving iris center detection and eliminating gaze offsets.
 - **Magnetic Snapping & Saccade Protection:** 300ms saccadic travel delay plus 40% magnetic pull settles the cursor cleanly onto target centers.
 
-### 8. Controlled Pointer Dynamics & Anti-Jitter ([`content.js`](file:///I:/Drishti%202.0/src/content/content.js))
+### 9. Controlled Pointer Dynamics & Anti-Jitter ([`content.js`](file:///I:/Drishti%202.0/src/content/content.js))
 - **Responsive Damping Curve:** Tightened deadband ($6\text{px}$) ensures the pointer never freezes short of buttons; responsive damping ($\alpha = 0.22\text{--}0.75$) eliminates lag.
 - **Instant Saccadic Transition:** Speed cap expanded to $160\text{px}/\text{frame}$ so the cursor glides immediately to where the user looks.
 - **Strict Mouse Bounds:** Mouse pointer input enforces strict physical element boundaries, completely preventing accidental sidebar dwell fires during ordinary mouse use.

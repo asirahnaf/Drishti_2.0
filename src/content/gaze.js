@@ -28,12 +28,16 @@
     /**
      * @param {object} opts
      * @param {(x:number,y:number)=>void} opts.onGaze  viewport gaze coords
+     * @param {(gesture:string, score:number)=>void} opts.onGesture hand gesture recognition
+     * @param {()=>void} opts.onCalibComplete calibration finished
+     * @param {(state:object)=>void} opts.onAudioState audio gate and RNNoise VAD state
      * @param {(msg:string, ms?:number)=>void} opts.toast  user-facing status
      */
-    constructor({ onGaze, onGesture, onCalibComplete, toast }) {
+    constructor({ onGaze, onGesture, onCalibComplete, onAudioState, toast }) {
       this.onGaze = onGaze || (() => {});
       this.onGesture = onGesture || (() => {});
       this.onCalibComplete = onCalibComplete || (() => {});
+      this.onAudioState = onAudioState || (() => {});
       this.toast = toast || (() => {});
       this.running = false;
       this.iframe = null;
@@ -121,6 +125,19 @@
             this.onGesture(d.gesture, d.score);
           }
           break;
+        case "audioState":
+          if (this.onAudioState) {
+            this.onAudioState(d);
+          }
+          break;
+        case "audioReady":
+          console.info("[Drishti GazeBridge] Audio processor ready in frame");
+          break;
+        case "audioError":
+          console.warn("[Drishti GazeBridge] Audio processor error in frame:", d.error);
+          break;
+        case "audioStopped":
+          break;
         case "status":
           console.info(`[Drishti] ${d.msg}`);
           break;
@@ -207,6 +224,21 @@
 
     async toggle() {
       return this.running ? (await this.disable(), false) : await this.enable();
+    }
+
+    /** Start audio processor (RNNoise neural filter + decibel gate) in the extension frame. */
+    async startAudio() {
+      try {
+        await this._ensureFrame();
+        this._post("startAudio");
+      } catch (err) {
+        console.warn("[Drishti] Could not start audio processor:", err);
+      }
+    }
+
+    /** Stop audio processor in the extension frame. */
+    stopAudio() {
+      this._post("stopAudio");
     }
 
     /**

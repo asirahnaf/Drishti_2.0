@@ -491,10 +491,12 @@
     let smoothedY = null;
     let lastGestureTime = 0;
     let lastGestureType = "";
+    let gaze = null;
+    let voice = null;
 
     const { GazeController } = window.Drishti || {};
     if (GazeController) {
-      const gaze = new GazeController({
+      gaze = new GazeController({
         onGaze: (x, y) => {
           if (Date.now() - lastMouseMoveTime > 1500) {
             const curX = Math.max(0, Math.min(window.innerWidth, x));
@@ -581,6 +583,10 @@
             takeScreenshot(sidebar);
           }
         },
+        onAudioState: (st) => {
+          if (voice) voice.updateAudioState(st);
+          sidebar.setAudioState?.(st);
+        },
         toast: (m, ms) => sidebar.toast(m, ms),
       });
       sidebar.onGazeToggle(async () => {
@@ -607,10 +613,12 @@
     // Voice Engine (Multimodal Voice & Command Navigation)
     const { VoiceEngine } = window.Drishti || {};
     if (VoiceEngine) {
-      const voice = new VoiceEngine({
+      voice = new VoiceEngine({
         onCommand: (cmd) => handleVoiceCommand(cmd, sidebar),
         onStatus: (st) => sidebar.setVoiceState(st.active),
         toast: (m, ms) => sidebar.toast(m, ms),
+        startAudioProcessor: () => gaze?.startAudio?.(),
+        stopAudioProcessor: () => gaze?.stopAudio?.(),
       });
 
       // Auto-resume voice across page navigations & new tabs if enabled

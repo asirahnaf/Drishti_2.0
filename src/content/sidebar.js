@@ -99,10 +99,23 @@
     .voice-toggle.on { border-color: #38bdf8; background: rgba(56,189,248,0.20); }
     .voice-toggle .dot { width: 7px; height: 7px; border-radius: 50%; background: #888; }
     .voice-toggle.on .dot { background: #38bdf8; animation: pulse 1.2s infinite; }
+    .voice-toggle.on.speaking {
+      border-color: #2ecc71;
+      background: rgba(46, 204, 113, 0.25);
+      box-shadow: 0 0 10px rgba(46, 204, 113, 0.35);
+    }
+    .voice-toggle.on.speaking .dot {
+      background: #2ecc71;
+      animation: speaking-pulse 0.35s infinite alternate;
+    }
     @keyframes pulse {
       0% { transform: scale(0.9); opacity: 0.7; }
       50% { transform: scale(1.2); opacity: 1; }
       100% { transform: scale(0.9); opacity: 0.7; }
+    }
+    @keyframes speaking-pulse {
+      0% { transform: scale(1.0); opacity: 0.85; }
+      100% { transform: scale(1.45); opacity: 1; }
     }
     .aac-toggle {
       flex: 0 0 auto; height: 28px; width: 100%;
@@ -341,8 +354,30 @@
     setVoiceState(on) {
       if (!this.voiceBtn) return;
       this.voiceBtn.classList.toggle("on", !!on);
+      if (!on) {
+        this.voiceBtn.classList.remove("speaking");
+        this.voiceBtn.removeAttribute("title");
+      }
       const label = this.voiceBtn.querySelector(".voice-label");
       if (label) label.textContent = on ? "Voice on" : "Voice off";
+    }
+
+    /** Reflect neural VAD / decibel state in voice button for live speech feedback. */
+    setAudioState(state) {
+      if (!this.voiceBtn || !this.voiceBtn.classList.contains("on")) return;
+      const isSpeaking = !!state?.isSpeech;
+      this.voiceBtn.classList.toggle("speaking", isSpeaking);
+      if (isSpeaking) {
+        this.voiceBtn.setAttribute(
+          "title",
+          `Voice Active: Speech detected (VAD: ${Math.round((state.vadProb || 0) * 100)}%, ${state.dB || 0} dB)`
+        );
+      } else {
+        this.voiceBtn.setAttribute(
+          "title",
+          `Voice Active: Noise filtered (Gate: ${state?.gateOpen ? "Open" : "Closed"}, ${state?.dB || 0} dB)`
+        );
+      }
     }
 
     /** Register the AAC phrase toggle handler (called from content.js). */

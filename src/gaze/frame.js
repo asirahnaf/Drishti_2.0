@@ -431,6 +431,206 @@
     } catch (_) {}
   }
 
+  // --- Two-Stage Audio Processing: Decibel Gate + RNNoise Neural VAD ---
+  let audioCtx = null;
+  let audioStream = null;
+  let audioSource = null;
+  let scriptNode = null;
+  let silentGain = null;
+  let rnnModule = null;
+  let rnnState = null;
+  let rnnInPtr = null;
+  let rnnOutPtr = null;
+  let isAudioRunning = false;
+
+  async function initRNNoise() {
+    if (rnnModule) return rnnModule;
+    if (typeof window.createRNNWasmModule !== "function") {
+      console.warn("[Drishti/frame] createRNNWasmModule not found in frame");
+      return null;
+    }
+    try {
+      const wasmUrl = ext.runtime.getURL("src/vendor/rnnoise/rnnoise.wasm");
+      const resp = await fetch(wasmUrl);
+      if (!resp.ok) throw new Error(`RNNoise WASM fetch failed: ${resp.status}`);
+      const wasmBinary = new Uint8Array(await resp.arrayBuffer());
+
+      // Isolate global Module during initialization to prevent cross-library collisions
+      const savedModule = window.Module;
+      window.Module = undefined;
+      if (typeof self !== "undefined") self.Module = undefined;
+
+      try {
+        rnnModule = await window.createRNNWasmModule({ wasmBinary });
+      } finally {
+        if (savedModule) window.Module = savedModule;
+      }
+
+      rnnInPtr = rnnModule._malloc(480 * 4);
+      rnnOutPtr = rnnModule._malloc(480 * 4);
+      rnnState = rnnModule._rnnoise_create(null);
+      console.info("[Drishti/frame] RNNoise WASM initialized successfully!");
+      return rnnModule;
+    } catch (err) {
+      console.error("[Drishti/frame] RNNoise initialization failed:", err);
+      return null;
+    }
+  }
+
+  async function startAudioProcessor() {
+    if (isAudioRunning) {
+      post({ evt: "audioReady" });
+      return;
+    }
+    try {
+      await initRNNoise();
+
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) {
+        console.warn("[Drishti/frame] Web Audio API not supported in this frame");
+        return;
+      }
+
+      audioStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          sampleRate: 48000,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+
+      audioCtx = new AudioContextClass({ sampleRate: 48000 });
+      audioSource = audioCtx.createMediaStreamSource(audioStream);
+
+      // Buffer size 512 samples (~10.6ms at 48kHz), 1 input, 1 output
+      scriptNode = audioCtx.createScriptProcessor(512, 1, 1);
+
+      const sampleQueue = [];
+      const tempFloat32 = new Float32Array(480);
+      const DB_GATE_THRESHOLD = -44; // dB: normal speech is -30 to -15 dB; ambient room noise is < -50 dB
+      const HANGOVER_MS = 350;       // ms: speech continuity hold time to bridge word pauses
+      let lastGateOpenTime = 0;
+      let lastPostTime = 0;
+      let lastReportedSpeech = false;
+      let smoothedVad = 0;
+
+      scriptNode.onaudioprocess = (e) => {
+        if (!isAudioRunning) return;
+        const input = e.inputBuffer.getChannelData(0);
+
+        // 1. Stage 1: Fast Decibel / RMS Energy Gate
+        let sumSq = 0;
+        for (let i = 0; i < input.length; i++) {
+          sumSq += input[i] * input[i];
+        }
+        const rms = Math.sqrt(sumSq / input.length);
+        const dB = rms > 1e-5 ? 20 * Math.log10(rms) : -100;
+
+        const now = performance.now();
+        if (dB >= DB_GATE_THRESHOLD) {
+          lastGateOpenTime = now;
+        }
+        const gateOpen = (now - lastGateOpenTime) < HANGOVER_MS;
+
+        // 2. Queue samples for RNNoise (480-sample blocks at 48kHz = 10ms frames)
+        for (let i = 0; i < input.length; i++) {
+          sampleQueue.push(input[i]);
+        }
+
+        let latestVad = smoothedVad;
+        if (rnnModule && rnnState && gateOpen) {
+          while (sampleQueue.length >= 480) {
+            const frame = sampleQueue.splice(0, 480);
+            for (let i = 0; i < 480; i++) {
+              // Scale browser Float32 [-1.0, 1.0] to 16-bit PCM scale [-32768, 32767]
+              tempFloat32[i] = frame[i] * 32767;
+            }
+            rnnModule.HEAPF32.set(tempFloat32, rnnInPtr / 4);
+            const prob = rnnModule._rnnoise_process_frame(rnnState, rnnOutPtr, rnnInPtr);
+            // Exponential moving average for smooth, chatter-free speech presence
+            smoothedVad = (smoothedVad * 0.35) + (prob * 0.65);
+            latestVad = smoothedVad;
+          }
+        } else {
+          // Discard sample backlog when gate is closed to prevent latency buildup
+          if (sampleQueue.length > 960) {
+            sampleQueue.splice(0, sampleQueue.length - 480);
+          }
+          smoothedVad = smoothedVad * 0.6; // decay toward zero
+          latestVad = smoothedVad;
+        }
+
+        // Stage 2: Neural VAD threshold (>= 0.65 confidence)
+        const isSpeech = gateOpen && (latestVad >= 0.65);
+
+        // State dispatch: immediate on transition, throttled to ~120ms during continuous speech/silence
+        const stateChanged = (isSpeech !== lastReportedSpeech);
+        if (stateChanged || (now - lastPostTime > 120)) {
+          lastReportedSpeech = isSpeech;
+          lastPostTime = now;
+          post({
+            evt: "audioState",
+            gateOpen,
+            isSpeech,
+            vadProb: Math.round(latestVad * 100) / 100,
+            dB: Math.round(dB),
+          });
+        }
+      };
+
+      audioSource.connect(scriptNode);
+
+      // Connect scriptNode to destination via zero-gain node to keep the Web Audio clock active
+      silentGain = audioCtx.createGain();
+      silentGain.gain.value = 0;
+      scriptNode.connect(silentGain);
+      silentGain.connect(audioCtx.destination);
+
+      isAudioRunning = true;
+      console.info("[Drishti/frame] Audio processor active with RNNoise neural VAD + Decibel gate");
+      post({ evt: "audioReady" });
+    } catch (err) {
+      console.error("[Drishti/frame] Audio processor start error:", err);
+      post({ evt: "audioError", error: String(err?.message || err) });
+    }
+  }
+
+  function stopAudioProcessor() {
+    isAudioRunning = false;
+    if (scriptNode) {
+      try { scriptNode.disconnect(); } catch (_) {}
+      scriptNode = null;
+    }
+    if (silentGain) {
+      try { silentGain.disconnect(); } catch (_) {}
+      silentGain = null;
+    }
+    if (audioSource) {
+      try { audioSource.disconnect(); } catch (_) {}
+      audioSource = null;
+    }
+    if (audioStream) {
+      try {
+        audioStream.getTracks().forEach((t) => t.stop());
+      } catch (_) {}
+      audioStream = null;
+    }
+    if (audioCtx) {
+      try { audioCtx.close(); } catch (_) {}
+      audioCtx = null;
+    }
+    if (rnnModule && rnnState) {
+      try {
+        rnnModule._rnnoise_destroy(rnnState);
+        rnnState = rnnModule._rnnoise_create(null);
+      } catch (_) {}
+    }
+    console.info("[Drishti/frame] Audio processor stopped");
+    post({ evt: "audioStopped" });
+  }
+
   function stop() {
     stopGestureLoop();
     if (!wg) return;
@@ -458,6 +658,8 @@
       case "calibEnd":      onCalibEnd(); break;
       case "startGestures": startGestureLoop(); break;
       case "stopGestures":  stopGestureLoop(); break;
+      case "startAudio":    startAudioProcessor(); break;
+      case "stopAudio":     stopAudioProcessor(); break;
       case "preview":       preview(d.on); break;
       case "stop":          stop(); break;
     }
