@@ -524,19 +524,17 @@
               const dist = Math.hypot(dx, dy);
 
               // Accela Non-Linear Velocity Damping Filter (Opentrack mathematical model):
-              // 1. Deadband: freeze physiological micro-tremor and webcam sensor noise (< 3.5px)
-              const DEAD_BAND_PX = 3.5;
+              // 1. Deadband: freeze physiological micro-tremor and webcam sensor noise (< 3.0px)
+              const DEAD_BAND_PX = 3.0;
               if (dist > DEAD_BAND_PX) {
-                // 2. Continuous Power Gain: smoothly transitions from high-damping hover (alpha ~ 0.18)
-                //    to zero-lag saccadic snap (alpha ~ 0.85) without stepped thresholds.
-                const SACCADE_DIST_PX = 95.0;
+                // 2. Continuous Linear Gain: fast convergence (alpha 0.38 - 0.92) eliminates trailing lag
+                const SACCADE_DIST_PX = 65.0;
                 const normDist = Math.min(1.0, (dist - DEAD_BAND_PX) / (SACCADE_DIST_PX - DEAD_BAND_PX));
-                const gain = Math.pow(normDist, 1.5);
-                const alpha = 0.18 + (0.85 - 0.18) * gain;
+                const alpha = 0.38 + (0.92 - 0.38) * normDist;
 
                 let step = alpha * dist;
-                // 3. Slew Rate Cap: relaxed to 180px/frame to eliminate saccadic lag offset
-                const MAX_STEP_PX = 180;
+                // 3. Slew Rate Cap: 240px/frame allows instantaneous saccadic snapping
+                const MAX_STEP_PX = 240;
                 if (step > MAX_STEP_PX) {
                   step = MAX_STEP_PX;
                 }
