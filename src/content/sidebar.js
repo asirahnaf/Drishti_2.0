@@ -96,13 +96,44 @@
     .gaze-toggle.on { border-color: #2ecc71; background: rgba(46,204,113,0.18); }
     .gaze-toggle .dot { width: 7px; height: 7px; border-radius: 50%; background: #888; }
     .gaze-toggle.on .dot { background: #2ecc71; }
+    .gaze-toggle.head-mode.on { border-color: #a855f7; background: rgba(168, 85, 247, 0.20); }
+    .gaze-toggle.head-mode.on .dot { background: #a855f7; }
+    .mode-toggle {
+      flex: 0 0 auto; height: 23px; width: 100%;
+      display: flex; align-items: center; justify-content: center; gap: 4px;
+      border: 1px solid rgba(255,255,255,0.15); border-radius: 8px;
+      background: rgba(255,255,255,0.04); color: #c0c6d0;
+      font: 600 10px system-ui, sans-serif; cursor: pointer;
+      transition: background 120ms, border-color 120ms, color 120ms;
+    }
+    .mode-toggle:hover {
+      background: rgba(255,255,255,0.10); color: #fff; border-color: rgba(255,255,255,0.3);
+    }
+    .mode-toggle.head {
+      border-color: rgba(168, 85, 247, 0.5);
+      background: rgba(168, 85, 247, 0.16);
+      color: #e9d5ff;
+    }
     .voice-toggle.on { border-color: #38bdf8; background: rgba(56,189,248,0.20); }
     .voice-toggle .dot { width: 7px; height: 7px; border-radius: 50%; background: #888; }
     .voice-toggle.on .dot { background: #38bdf8; animation: pulse 1.2s infinite; }
+    .voice-toggle.on.speaking {
+      border-color: #2ecc71;
+      background: rgba(46, 204, 113, 0.25);
+      box-shadow: 0 0 10px rgba(46, 204, 113, 0.35);
+    }
+    .voice-toggle.on.speaking .dot {
+      background: #2ecc71;
+      animation: speaking-pulse 0.35s infinite alternate;
+    }
     @keyframes pulse {
       0% { transform: scale(0.9); opacity: 0.7; }
       50% { transform: scale(1.2); opacity: 1; }
       100% { transform: scale(0.9); opacity: 0.7; }
+    }
+    @keyframes speaking-pulse {
+      0% { transform: scale(1.0); opacity: 0.85; }
+      100% { transform: scale(1.45); opacity: 1; }
     }
     .aac-toggle {
       flex: 0 0 auto; height: 28px; width: 100%;
@@ -149,6 +180,8 @@
       if (!this.root) throw new Error("[Drishti] host cannot host a shadow root");
       this.buttons = new Map(); // id -> { el, ringFill }
       this.isAacOpen = false;
+      this.trackingMode = "gaze";
+      this._isGazeOn = false;
       this._render();
     }
 
@@ -201,6 +234,20 @@
       this.voiceBtn = voiceBtn;
       headerRow.appendChild(voiceBtn);
       wrap.appendChild(headerRow);
+
+      // 1.5 Tracking Mode Segmented Pill (Eye Gaze vs Head Motion)
+      const modeToggle = document.createElement("button");
+      modeToggle.className = "mode-toggle";
+      modeToggle.type = "button";
+      modeToggle.setAttribute("aria-label", "Switch between Eye Gaze and Head Motion mode");
+      modeToggle.innerHTML = `<span class="mode-icon">👁️</span><span class="mode-label">Eye Gaze</span>`;
+      modeToggle.addEventListener("click", () => {
+        const next = this.trackingMode === "head" ? "gaze" : "head";
+        this.setTrackingMode(next);
+        this._onModeToggle?.(next);
+      });
+      this.modeToggle = modeToggle;
+      wrap.appendChild(modeToggle);
 
       // 2. AAC Quick Talk toggle button
       const aacBtn = document.createElement("button");
@@ -324,12 +371,35 @@
       this._onGazeToggle = fn;
     }
 
+    /** Register tracking mode switch handler (called from content.js). */
+    onModeToggle(fn) {
+      this._onModeToggle = fn;
+    }
+
+    /** Reflect tracking mode in UI ("gaze" vs "head"). */
+    setTrackingMode(mode) {
+      this.trackingMode = mode === "head" ? "head" : "gaze";
+      if (this.modeToggle) {
+        this.modeToggle.classList.toggle("head", this.trackingMode === "head");
+        const icon = this.modeToggle.querySelector(".mode-icon");
+        const label = this.modeToggle.querySelector(".mode-label");
+        if (icon) icon.textContent = this.trackingMode === "head" ? "👤" : "👁️";
+        if (label) label.textContent = this.trackingMode === "head" ? "Head Motion" : "Eye Gaze";
+      }
+      this.setGazeState(this._isGazeOn);
+    }
+
     /** Reflect gaze on/off in the toggle button. */
     setGazeState(on) {
+      this._isGazeOn = !!on;
       if (!this.gazeBtn) return;
       this.gazeBtn.classList.toggle("on", !!on);
+      this.gazeBtn.classList.toggle("head-mode", this.trackingMode === "head");
       const label = this.gazeBtn.querySelector(".gaze-label");
-      if (label) label.textContent = on ? "Gaze on" : "Gaze off";
+      if (label) {
+        const modeLabel = this.trackingMode === "head" ? "Head" : "Gaze";
+        label.textContent = on ? `${modeLabel} on` : `${modeLabel} off`;
+      }
     }
 
     /** Register the voice toggle handler (called from content.js). */
@@ -341,8 +411,30 @@
     setVoiceState(on) {
       if (!this.voiceBtn) return;
       this.voiceBtn.classList.toggle("on", !!on);
+      if (!on) {
+        this.voiceBtn.classList.remove("speaking");
+        this.voiceBtn.removeAttribute("title");
+      }
       const label = this.voiceBtn.querySelector(".voice-label");
       if (label) label.textContent = on ? "Voice on" : "Voice off";
+    }
+
+    /** Reflect neural VAD / decibel state in voice button for live speech feedback. */
+    setAudioState(state) {
+      if (!this.voiceBtn || !this.voiceBtn.classList.contains("on")) return;
+      const isSpeaking = !!state?.isSpeech;
+      this.voiceBtn.classList.toggle("speaking", isSpeaking);
+      if (isSpeaking) {
+        this.voiceBtn.setAttribute(
+          "title",
+          `Voice Active: Speech detected (VAD: ${Math.round((state.vadProb || 0) * 100)}%, ${state.dB || 0} dB)`
+        );
+      } else {
+        this.voiceBtn.setAttribute(
+          "title",
+          `Voice Active: Noise filtered (Gate: ${state?.gateOpen ? "Open" : "Closed"}, ${state?.dB || 0} dB)`
+        );
+      }
     }
 
     /** Register the AAC phrase toggle handler (called from content.js). */

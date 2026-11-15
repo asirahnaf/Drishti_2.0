@@ -426,6 +426,18 @@
       case "dictation-exit":
         window.Drishti?.dictationInstance?.close();
         break;
+      case "recenter":
+        gaze?.recenter();
+        break;
+      case "set-tracking-mode":
+        if (cmd.mode && gaze) {
+          gaze.setTrackingMode(cmd.mode);
+          sidebar.setTrackingMode(cmd.mode);
+          try {
+            send(MSG.SET_SETTINGS, { patch: { trackingMode: cmd.mode } });
+          } catch (_) {}
+        }
+        break;
       default:
         console.log(`[Drishti] Voice action: ${cmd.action}`, cmd);
     }
@@ -491,11 +503,14 @@
     let smoothedY = null;
     let lastGestureTime = 0;
     let lastGestureType = "";
+    let gaze = null;
+    let voice = null;
 
     const { GazeController } = window.Drishti || {};
     if (GazeController) {
-      const gaze = new GazeController({
-        onGaze: (x, y) => {
+      gaze = new GazeController({
+        trackingMode: settings.trackingMode || "gaze",
+        onGaze: (x, y, mode) => {
           if (Date.now() - lastMouseMoveTime > 1500) {
             const curX = Math.max(0, Math.min(window.innerWidth, x));
             const curY = Math.max(0, Math.min(window.innerHeight, y));
@@ -508,25 +523,18 @@
               const dy = curY - smoothedY;
               const dist = Math.hypot(dx, dy);
 
-              // 1. Fixation Deadband: within 6px, keep pointer steady to eliminate micro-tremor vibration
-              // (tightened from 14px to eliminate offset stopping short)
-              if (dist >= 6) {
-                // 2. High-Responsiveness Damping Curve:
-                // Small movements (<35px): alpha 0.22 ensures full convergence with no visual lag
-                // Medium shifts (35-120px): alpha 0.40 fast transit
-                // Saccades (>120px): alpha 0.75 snaps immediately to target with zero trailing
-                let alpha;
-                if (dist < 35) {
-                  alpha = 0.22;
-                } else if (dist < 120) {
-                  alpha = 0.40;
-                } else {
-                  alpha = 0.75;
-                }
+              // Accela Non-Linear Velocity Damping Filter (Opentrack mathematical model):
+              // 1. Deadband: freeze physiological micro-tremor and webcam sensor noise (< 3.0px)
+              const DEAD_BAND_PX = 3.0;
+              if (dist > DEAD_BAND_PX) {
+                // 2. Continuous Linear Gain: fast convergence (alpha 0.38 - 0.92) eliminates trailing lag
+                const SACCADE_DIST_PX = 65.0;
+                const normDist = Math.min(1.0, (dist - DEAD_BAND_PX) / (SACCADE_DIST_PX - DEAD_BAND_PX));
+                const alpha = 0.38 + (0.92 - 0.38) * normDist;
 
                 let step = alpha * dist;
-                // 3. Slew Rate Cap: relaxed to 160px/frame to eliminate saccadic lag offset
-                const MAX_STEP_PX = 160;
+                // 3. Slew Rate Cap: 240px/frame allows instantaneous saccadic snapping
+                const MAX_STEP_PX = 240;
                 if (step > MAX_STEP_PX) {
                   step = MAX_STEP_PX;
                 }
@@ -537,7 +545,7 @@
             }
 
             // Natural Smooth Gaze Tracking:
-            // Cursor follows smoothed gaze position. When hovering, gently bias 30% toward button center.
+            // Cursor follows smoothed gaze position. When hovering, gently bias 45% toward button center.
             let cursorX = smoothedX;
             let cursorY = smoothedY;
             if (dwell.zoneId) {
@@ -553,7 +561,7 @@
             }
             sidebar.updateGazeCursor(cursorX, cursorY, true);
 
-            dwell.update(smoothedX, smoothedY, "gaze");
+            dwell.update(smoothedX, smoothedY, mode === "head" ? "head" : "gaze");
             window.Drishti?.dictationInstance?.updatePointer(cursorX, cursorY);
           } else {
             smoothedX = null;
@@ -581,8 +589,23 @@
             takeScreenshot(sidebar);
           }
         },
+        onAudioState: (st) => {
+          if (voice) voice.updateAudioState(st);
+          sidebar.setAudioState?.(st);
+        },
         toast: (m, ms) => sidebar.toast(m, ms),
       });
+
+      // Synchronize tracking mode with sidebar
+      sidebar.setTrackingMode(settings.trackingMode || "gaze");
+      sidebar.onModeToggle(async (mode) => {
+        gaze?.setTrackingMode(mode);
+        try {
+          await send(MSG.SET_SETTINGS, { patch: { trackingMode: mode } });
+        } catch (_) {}
+        sidebar.toast(mode === "head" ? "👤 Switched to Head Motion Mode" : "👁️ Switched to Eye Gaze Mode", 3000);
+      });
+
       sidebar.onGazeToggle(async () => {
         const on = await gaze.toggle();
         sidebar.setGazeState(on);
@@ -607,10 +630,12 @@
     // Voice Engine (Multimodal Voice & Command Navigation)
     const { VoiceEngine } = window.Drishti || {};
     if (VoiceEngine) {
-      const voice = new VoiceEngine({
+      voice = new VoiceEngine({
         onCommand: (cmd) => handleVoiceCommand(cmd, sidebar),
         onStatus: (st) => sidebar.setVoiceState(st.active),
         toast: (m, ms) => sidebar.toast(m, ms),
+        startAudioProcessor: () => gaze?.startAudio?.(),
+        stopAudioProcessor: () => gaze?.stopAudio?.(),
       });
 
       // Auto-resume voice across page navigations & new tabs if enabled
@@ -642,6 +667,28 @@
           try {
             await send(MSG.SET_SETTINGS, { patch: { voiceEnabled: on } });
           } catch (e) {}
+        }
+      });
+
+      // Quick keyboard shortcut Alt+C to re-center pointer / head pose
+      window.addEventListener("keydown", (e) => {
+        if (e.altKey && (e.key === "c" || e.key === "C")) {
+          e.preventDefault();
+          gaze?.recenter();
+        }
+      });
+
+      // Quick keyboard shortcut Alt+M to toggle tracking mode (Eye Gaze vs Head Motion)
+      window.addEventListener("keydown", async (e) => {
+        if (e.altKey && (e.key === "m" || e.key === "M")) {
+          e.preventDefault();
+          const next = gaze?.trackingMode === "head" ? "gaze" : "head";
+          gaze?.setTrackingMode(next);
+          sidebar.setTrackingMode(next);
+          try {
+            await send(MSG.SET_SETTINGS, { patch: { trackingMode: next } });
+          } catch (_) {}
+          sidebar.toast(next === "head" ? "👤 Switched to Head Motion Mode" : "👁️ Switched to Eye Gaze Mode", 3000);
         }
       });
 
