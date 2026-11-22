@@ -19,6 +19,19 @@
   "use strict";
   const NS = (window.Drishti = window.Drishti || {});
   const MSG_NS = "drishti-gaze";
+  const NONCE_PREFIX = "drishti:gazeNonce:";
+
+  // Security model: the iframe lives in the host page's DOM, so the page can
+  // postMessage to it and read anything it posts to window.parent. All real
+  // traffic therefore goes over a private MessageChannel. The frame only accepts
+  // the channel together with a one-time nonce that we write to extension
+  // storage first — web pages cannot read or write chrome.storage, so a page
+  // cannot forge the handshake or hijack the camera/mic.
+  function makeNonce() {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  }
 
   const ext =
     window.Drishti?.platform?.ext ||
@@ -52,7 +65,9 @@
       this._overlay = null;
       this._onCalibFixation = null;
       this._onCalibGaze = null;
+      this._port = null; // private MessageChannel port to the frame
       this._onMessage = this._onMessage.bind(this);
+      this._onWindowMessage = this._onWindowMessage.bind(this);
       this._startWaiters = null; // {resolve} for the pending start() round-trip
     }
 
@@ -60,7 +75,7 @@
     _ensureFrame() {
       if (this._frameReady) return this._frameReady;
 
-      window.addEventListener("message", this._onMessage);
+      window.addEventListener("message", this._onWindowMessage);
 
       this._frameReady = new Promise((resolve, reject) => {
         const iframe = document.createElement("iframe");
@@ -89,22 +104,49 @@
     }
 
     _post(cmd, extra = {}) {
-      if (!this.iframe?.contentWindow) return;
+      if (!this._port) return;
+      this._port.postMessage({ cmd, ...extra });
+    }
+
+    /**
+     * The only window-level message we accept: the frame's content-free "loaded"
+     * ping. On it, open the private channel and hand the frame its port + nonce.
+     */
+    async _onWindowMessage(e) {
+      if (e.origin !== this._extOrigin) return;
+      if (e.source !== this.iframe?.contentWindow) return;
+      const d = e.data;
+      if (!d || d.ns !== MSG_NS || d.evt !== "loaded" || this._port) return;
+
+      window.removeEventListener("message", this._onWindowMessage);
+      const nonce = makeNonce();
+      const key = NONCE_PREFIX + nonce;
+      try {
+        await ext.storage.local.set({ [key]: Date.now() });
+      } catch (err) {
+        console.error("[Drishti] could not store gaze handshake nonce:", err);
+        return;
+      }
+      // The frame deletes the nonce once used; this cleans up if it never is.
+      setTimeout(() => ext.storage.local.remove(key).catch?.(() => {}), 15000);
+
+      const channel = new MessageChannel();
+      this._port = channel.port1;
+      this._port.onmessage = this._onMessage;
       this.iframe.contentWindow.postMessage(
-        { ns: MSG_NS, cmd, ...extra },
-        this._extOrigin
+        { ns: MSG_NS, cmd: "connect", nonce },
+        this._extOrigin,
+        [channel.port2]
       );
     }
 
     _onMessage(e) {
-      // Only trust our extension-origin frame with the right namespace.
-      if (e.origin !== this._extOrigin) return;
-      if (e.source !== this.iframe?.contentWindow) return;
+      // Arrives only on our private port, so it cannot come from the page.
       const d = e.data;
-      if (!d || d.ns !== MSG_NS || !d.evt) return;
+      if (!d || !d.evt) return;
 
       switch (d.evt) {
-        case "loaded":
+        case "connected":
           clearTimeout(this._loadTimer);
           this._resolveLoaded?.(true);
           break;

@@ -24,13 +24,16 @@
   const EXT_ORIGIN = new URL(ext.runtime.getURL("")).origin;
   const NS = "drishti-gaze";
 
+  const NONCE_PREFIX = "drishti:gazeNonce:";
+
   let wg = null;
   let running = false;
+  let port = null; // private MessageChannel port from our content script
 
+  // Everything (gaze coords, speech state, errors) goes ONLY over the private
+  // port. Posting to window.parent would hand it to the host web page.
   function post(msg) {
-    // Parent is the host web page; its origin varies, so target "*" and let the
-    // content script validate by event.origin === our extension origin + ns tag.
-    window.parent.postMessage({ ns: NS, ...msg }, "*");
+    if (port) port.postMessage(msg);
   }
 
   function webgazer() {
@@ -739,13 +742,42 @@
     post({ evt: "stopped" });
   }
 
-  // Commands from the content script (parent). Validate source + ns; the parent is
-  // the web page so we can't pin its origin, but only our content script knows to
-  // target this frame with the ns tag.
-  window.addEventListener("message", (e) => {
-    if (e.source !== window.parent) return;
+  // Commands arrive ONLY over the private port. The parent window is the host web
+  // page, which can postMessage this frame freely, so window messages are used
+  // for exactly one thing: the "connect" handshake, which must carry a one-time
+  // nonce that our content script stored in extension storage. Web pages cannot
+  // read or write chrome.storage, so they cannot forge it.
+  async function verifyNonce(nonce) {
+    if (typeof nonce !== "string" || !/^[0-9a-f]{32}$/.test(nonce)) return false;
+    const key = NONCE_PREFIX + nonce;
+    try {
+      const stored = await ext.storage.local.get(key);
+      if (!(key in stored)) return false;
+      await ext.storage.local.remove(key); // one-time use
+      return true;
+    } catch (err) {
+      console.warn("[Drishti/frame] nonce check failed:", err);
+      return false;
+    }
+  }
+
+  window.addEventListener("message", async (e) => {
+    if (port || e.source !== window.parent) return;
     const d = e.data;
-    if (!d || d.ns !== NS || !d.cmd) return;
+    if (!d || d.ns !== NS || d.cmd !== "connect" || !e.ports?.[0]) return;
+    const candidate = e.ports[0];
+    if (!(await verifyNonce(d.nonce))) {
+      console.warn("[Drishti/frame] rejected connect with invalid nonce");
+      return;
+    }
+    if (port) return; // another valid connect won the race meanwhile
+    port = candidate;
+    port.onmessage = (ev) => handleCommand(ev.data);
+    post({ evt: "connected" });
+  });
+
+  function handleCommand(d) {
+    if (!d || !d.cmd) return;
     switch (d.cmd) {
       case "start":         start(d.opts || {}); break;
       case "calibStart":    onCalibStart(); break;
@@ -767,8 +799,9 @@
       case "preview":       preview(d.on); break;
       case "stop":          stop(); break;
     }
-  });
+  }
 
-  // Tell the parent we're loaded and ready to receive "start".
-  post({ evt: "loaded" });
+  // Tell the parent we're loaded. This is the only message the page can see and
+  // it carries no data; the content script answers with the private port.
+  window.parent.postMessage({ ns: NS, evt: "loaded" }, "*");
 })();
